@@ -1,0 +1,8 @@
+{
+  "show_time": true,
+  "show_date": false,
+  "show_temp": true,
+  "show_weather": true,
+  "location": "Los Angeles",
+  "use_bold": true
+}

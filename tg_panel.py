@@ -19,7 +19,7 @@ def save_config(config):
         json.dump(config, f, indent=4)
     # 修改配置后自动重启后台服务
     os.system("sudo systemctl restart tg_name.service")
-    print("\n✅ 配置已保存，后台服务已重启！")
+    print("\n✅ 配置已保存，后台服务已自动重启！")
 
 def clear_screen():
     os.system('clear')
@@ -40,47 +40,68 @@ def main_menu():
         print(f" [7] 设置地区: 当前 [{config['location']}]")
         print(f" [8] 粗体显示: {'✅ 开启' if config['use_bold'] else '❌ 关闭'}")
         print(f" [9] 🚀 一键开启所有展示项目")
+        print(f" [10] 🔄 强制重启后台服务")
         print(f" [0] 退出管理面板")
         print("="*45)
         
-        choice = input("请输入选项 (0-9): ").strip()
+        choice = input("请输入选项 (0-10): ").strip()
         
         if choice == '0':
             print("退出面板。")
             sys.exit()
+            
         elif choice == '1':
             if os.path.exists(SESSION_FILE):
                 os.remove(SESSION_FILE)
             print("旧凭证已删除，请按提示重新登录：")
-            # 强制使用 venv 虚拟环境内的 python 运行
             venv_python = os.path.join(os.path.dirname(__file__), 'venv', 'bin', 'python3')
             os.system(f"{venv_python} {os.path.join(os.path.dirname(__file__), 'tg_daemon.py')} --login")
-            input("按回车键返回主菜单...")
+            
+            print("\n正在重启后台服务...")
+            os.system("sudo systemctl restart tg_name.service")
+            input("✅ 配置已生效，按回车键返回主菜单...")
+            
         elif choice == '2':
-            os.system("sudo journalctl -u tg_name.service -f -n 50")
+            print("\n--- 最近 50 条系统运行日志 ---\n")
+            os.system("sudo journalctl -u tg_name.service -n 50 --no-pager")
+            print("\n------------------------------\n")
+            input("按回车键返回主菜单...")
+            
         elif choice == '3':
             config['show_time'] = not config['show_time']
             save_config(config)
+            
         elif choice == '4':
             config['show_date'] = not config['show_date']
             save_config(config)
+            
         elif choice == '5':
             config['show_temp'] = not config['show_temp']
             save_config(config)
+            
         elif choice == '6':
             config['show_weather'] = not config['show_weather']
             save_config(config)
+            
         elif choice == '7':
             new_loc = input("请输入新的城市名称 (拼音或英文): ").strip()
             if new_loc:
                 config['location'] = new_loc
                 save_config(config)
+                
         elif choice == '8':
             config['use_bold'] = not config['use_bold']
             save_config(config)
+            
         elif choice == '9':
             config.update({"show_time": True, "show_date": True, "show_temp": True, "show_weather": True, "use_bold": True})
             save_config(config)
+            
+        elif choice == '10':
+            print("\n正在强制重启后台服务...")
+            os.system("sudo systemctl restart tg_name.service")
+            print("✅ 服务已重启，将立即触发一次强制更新！")
+            input("按回车键返回主菜单...")
             
 if __name__ == "__main__":
     main_menu()

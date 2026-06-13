@@ -11,16 +11,23 @@ echo "=================================="
 sudo apt update
 sudo apt install -y python3 python3-pip python3-venv
 
-# 2. 准备项目目录
+# 2. 准备项目目录并从 GitHub 拉取核心文件
+echo ">> 正在从 GitHub 下载最新版本代码..."
 sudo mkdir -p $PROJECT_DIR
-sudo cp config.json tg_daemon.py tg_panel.py $PROJECT_DIR/
+REPO_URL="https://raw.githubusercontent.com/oKafuChino/TelegramNameUpdate/main"
+
+sudo curl -sL "$REPO_URL/config.json" -o $PROJECT_DIR/config.json
+sudo curl -sL "$REPO_URL/tg_daemon.py" -o $PROJECT_DIR/tg_daemon.py
+sudo curl -sL "$REPO_URL/tg_panel.py" -o $PROJECT_DIR/tg_panel.py
+sudo curl -sL "$REPO_URL/requirements.txt" -o $PROJECT_DIR/requirements.txt
+
 sudo chmod +x $PROJECT_DIR/tg_panel.py
 sudo chmod +x $PROJECT_DIR/tg_daemon.py
 
 # 3. 创建虚拟环境并安装依赖
 echo ">> 正在配置 Python 虚拟环境..."
 python3 -m venv $PROJECT_DIR/venv
-$PROJECT_DIR/venv/bin/pip install telethon urllib3
+$PROJECT_DIR/venv/bin/pip install -r $PROJECT_DIR/requirements.txt
 
 # 4. 配置 systemd 服务
 echo ">> 正在配置后台服务..."

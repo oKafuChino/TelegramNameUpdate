@@ -52,8 +52,9 @@ def main_menu():
             if os.path.exists(SESSION_FILE):
                 os.remove(SESSION_FILE)
             print("旧凭证已删除，请按提示重新登录：")
-            # 调用后台核心脚本进行交互式登录
-            os.system(f"{sys.executable} {os.path.join(os.path.dirname(__file__), 'tg_daemon.py')} --login")
+            # 强制使用 venv 虚拟环境内的 python 运行
+            venv_python = os.path.join(os.path.dirname(__file__), 'venv', 'bin', 'python3')
+            os.system(f"{venv_python} {os.path.join(os.path.dirname(__file__), 'tg_daemon.py')} --login")
             input("按回车键返回主菜单...")
         elif choice == '2':
             os.system("sudo journalctl -u tg_name.service -f -n 50")

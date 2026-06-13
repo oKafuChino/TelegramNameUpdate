@@ -24,7 +24,7 @@
 在支持 `systemd` 的 Debian / Ubuntu 系统终端中，以 `root` 或 `sudo` 权限直接运行以下命令即可完成自动部署：
 
 ```bash
-bash <(curl -sL [https://raw.githubusercontent.com/oKafuChino/TelegramNameUpdate/main/install.sh](https://raw.githubusercontent.com/oKafuChino/TelegramNameUpdate/main/install.sh))
+bash <(curl -sL (https://raw.githubusercontent.com/oKafuChino/TelegramNameUpdate/main/install.sh))
 ```
 
 > **⚠️ 准备工作**：安装前，请确保你已经前往 [Telegram API 申请页面](https://my.telegram.org) 获取了属于你账号的 `api_id` 和 `api_hash`。

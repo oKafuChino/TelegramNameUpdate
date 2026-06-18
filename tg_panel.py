@@ -11,7 +11,7 @@ import re
 # 【版本定义】
 # 每次修改代码推送到 GitHub 前，请手动提升此版本号
 # ==========================================
-CURRENT_VERSION = "v1.0.0"
+CURRENT_VERSION = "v1.1.0"
 
 CONFIG_FILE = os.path.join(os.path.dirname(__file__), 'config.json')
 SESSION_FILE = os.path.join(os.path.dirname(__file__), 'api_auth.session')
@@ -21,7 +21,6 @@ def check_for_updates():
     """静默检查 GitHub 上的最新版本"""
     try:
         req = urllib.request.Request(f"{REPO_URL}/tg_panel.py", headers={'Cache-Control': 'no-cache'})
-        # 设置 1.5 秒超时，防止网络不好时导致面板卡顿
         with urllib.request.urlopen(req, timeout=1.5) as response:
             content = response.read().decode('utf-8')
             match = re.search(r'CURRENT_VERSION\s*=\s*"([^"]+)"', content)
@@ -30,7 +29,7 @@ def check_for_updates():
                 if remote_version != CURRENT_VERSION:
                     return f" | 🚀 发现新版本 {remote_version}，请按 [11] 更新"
     except Exception:
-        pass # 如果网络异常直接跳过，不打扰用户
+        pass 
     return ""
 
 def load_config():
@@ -51,7 +50,6 @@ def clear_screen():
 def main_menu():
     while True:
         clear_screen()
-        # 渲染面板前先检查更新（会稍微等待约1秒钟）
         update_msg = check_for_updates()
         config = load_config()
         
@@ -70,10 +68,11 @@ def main_menu():
         print(f" [9]  🚀 一键开启所有展示项目")
         print(f" [10] 🔄 强制重启后台服务")
         print(f" [11] ⬇️ 从 GitHub 检查并自动更新脚本")
+        print(f" [12] 🌍 同步服务器时区至设定城市")
         print(f" [0]  退出管理面板")
         print("="*48)
         
-        choice = input("请输入选项 (0-11): ").strip()
+        choice = input("请输入选项 (0-12): ").strip()
         
         if choice == '0':
             print("退出面板。")
@@ -133,7 +132,6 @@ def main_menu():
             
         elif choice == '11':
             print("\n>> 正在从 GitHub 检查并拉取最新版本代码...")
-            # 使用 curl 下载覆盖核心运行脚本
             res1 = os.system(f"sudo curl -sL '{REPO_URL}/tg_daemon.py' -o /opt/tg_updater/tg_daemon.py")
             res2 = os.system(f"sudo curl -sL '{REPO_URL}/tg_panel.py' -o /opt/tg_updater/tg_panel.py")
             
@@ -148,5 +146,45 @@ def main_menu():
                 print("\n❌ 更新失败！请检查 VPS 网络连接或 GitHub 仓库地址是否正确。")
             input("按回车键返回主菜单...")
             
+        elif choice == '12':
+            loc = config.get('location', '').lower()
+            # 建立常见城市与标准时区 (IANA) 的映射字典
+            tz_mapping = {
+                "beijing": "Asia/Shanghai", "北京": "Asia/Shanghai",
+                "shanghai": "Asia/Shanghai", "上海": "Asia/Shanghai",
+                "guangzhou": "Asia/Shanghai", "广州": "Asia/Shanghai",
+                "shenzhen": "Asia/Shanghai", "深圳": "Asia/Shanghai",
+                "hong kong": "Asia/Hong_Kong", "香港": "Asia/Hong_Kong",
+                "taipei": "Asia/Taipei", "台北": "Asia/Taipei",
+                "tokyo": "Asia/Tokyo", "东京": "Asia/Tokyo",
+                "seoul": "Asia/Seoul", "首尔": "Asia/Seoul",
+                "singapore": "Asia/Singapore", "新加坡": "Asia/Singapore",
+                "london": "Europe/London", "伦敦": "Europe/London",
+                "new york": "America/New_York", "纽约": "America/New_York",
+                "los angeles": "America/Los_Angeles", "洛杉矶": "America/Los_Angeles",
+                "san francisco": "America/Los_Angeles", "旧金山": "America/Los_Angeles",
+                "sydney": "Australia/Sydney", "悉尼": "Australia/Sydney"
+            }
+            
+            target_tz = tz_mapping.get(loc)
+            if target_tz:
+                print(f"\n>> 识别到设定城市 [{config['location']}]，正在修改 VPS 系统时区为: {target_tz}...")
+                os.system(f"sudo timedatectl set-timezone {target_tz}")
+                print("✅ 时区同步成功！")
+            else:
+                print(f"\n❌ 无法自动匹配城市 [{config['location']}] 的标准时区。")
+                print("您可以手动输入 IANA 标准时区格式（例如: Asia/Shanghai, America/New_York）")
+                manual_tz = input("请输入标准时区 (直接回车取消): ").strip()
+                if manual_tz:
+                    res = os.system(f"sudo timedatectl set-timezone {manual_tz} 2>/dev/null")
+                    if res == 0:
+                        print(f"✅ 时区已手动设置为: {manual_tz}！")
+                    else:
+                        print("❌ 设置失败，请检查时区名称是否拼写正确。")
+            
+            print("\n正在重启后台服务刷新显示时间...")
+            os.system("sudo systemctl restart tg_name.service")
+            input("按回车键返回主菜单...")
+
 if __name__ == "__main__":
     main_menu()

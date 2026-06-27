@@ -8,12 +8,14 @@ import urllib.request
 import re
 import subprocess
 import time
+import unicodedata
 
 # ==========================================
 # 【版本定义】
 # 每次修改代码推送到 GitHub 前，请手动提升此版本号
 # ==========================================
-CURRENT_VERSION = "v1.3.4"
+CURRENT_VERSION = "v1.3.6"
+AUTHOR = "oKafuChino"
 
 CONFIG_FILE = os.path.join(os.path.dirname(__file__), 'config.json')
 SESSION_FILE = os.path.join(os.path.dirname(__file__), 'api_auth.session')
@@ -42,17 +44,30 @@ def color(text, *styles):
     prefix = "".join(COLORS[style] for style in styles if style in COLORS)
     return f"{prefix}{text}{COLORS['reset']}"
 
+def display_width(text):
+    width = 0
+    for char in text:
+        if unicodedata.combining(char):
+            continue
+        width += 2 if unicodedata.east_asian_width(char) in ("F", "W") else 1
+    return width
+
+def pad_right(text, width):
+    return text + " " * max(0, width - display_width(text))
+
 def state_text(enabled):
     if enabled:
         return color("● 开启", "green", "bold")
     return color("○ 关闭", "red")
 
 def menu_line(key, label, detail="", accent="cyan"):
-    key_text = color(f"[{key}]", accent, "bold")
+    key_text = color(pad_right(f"[{key}]", 4), accent, "bold")
+    label_text = pad_right(label, 18)
     if detail:
-        print(f"  {key_text} {label:<18} {color(detail, 'dim')}")
+        detail_text = detail if "\033[" in detail else color(detail, "dim")
+        print(f"  {key_text} {label_text} {detail_text}")
     else:
-        print(f"  {key_text} {label}")
+        print(f"  {key_text} {label_text}")
 
 def menu_section(title):
     print()
@@ -62,13 +77,14 @@ def box_row(text, highlight="", text_styles=()):
     width = 54
     plain_text = text + highlight
     display_text = (color(text, *text_styles) if text_styles else text) + (color(highlight, "green", "bold") if highlight else "")
-    padding = " " * max(0, width - len(plain_text))
+    padding = " " * max(0, width - display_width(plain_text))
     print(color("│", "cyan") + display_text + padding + color("│", "cyan"))
 
 def render_menu(config):
     print(color("╭" + "─"*54 + "╮", "cyan"))
     box_row("        Telegram 名字动态更新面板", text_styles=("bold", "white"))
     box_row("        当前版本: ", CURRENT_VERSION)
+    box_row("        作者: ", AUTHOR)
     print(color("╰" + "─"*54 + "╯", "cyan"))
 
     menu_section("账号与状态")
@@ -131,9 +147,14 @@ def load_config():
     config = DEFAULT_CONFIG.copy()
     if not os.path.exists(CONFIG_FILE):
         return config
-    with open(CONFIG_FILE, 'r', encoding='utf-8') as f:
-        config.update(json.load(f))
-        return config
+    try:
+        with open(CONFIG_FILE, 'r', encoding='utf-8') as f:
+            loaded = json.load(f)
+        if isinstance(loaded, dict):
+            config.update(loaded)
+    except (OSError, json.JSONDecodeError) as e:
+        print(f"⚠️ 配置文件读取失败，已使用默认配置: {e}")
+    return config
 
 def save_config(config):
     with open(CONFIG_FILE, 'w', encoding='utf-8') as f:
@@ -146,13 +167,26 @@ def clear_screen():
     run_command(["clear"])
 
 def download_remote_file(filename, target):
-    return run_command([
+    tmp_target = f"{target}.tmp"
+    result = run_command([
         "sudo", "curl", "-fsSL",
         "-H", "Cache-Control: no-cache",
         "-H", "Pragma: no-cache",
         remote_file_url(filename),
-        "-o", target
+        "-o", tmp_target
     ])
+    return result, tmp_target
+
+def validate_python_file(path):
+    return run_command([
+        sys.executable,
+        "-c",
+        "import ast, pathlib, sys; ast.parse(pathlib.Path(sys.argv[1]).read_text(encoding='utf-8'), filename=sys.argv[1])",
+        path
+    ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL) == 0
+
+def replace_remote_file(tmp_target, target):
+    return run_command(["sudo", "mv", tmp_target, target])
 
 def main_menu():
     while True:
@@ -240,19 +274,33 @@ def main_menu():
                 print(f">> 发现新版本 {remote_version}，正在拉取最新代码...")
             else:
                 print(">> 无法获取远程版本号，仍尝试拉取最新代码...")
-            res1 = download_remote_file("tg_daemon.py", "/opt/tg_updater/tg_daemon.py")
-            res2 = download_remote_file("tg_panel.py", "/opt/tg_updater/tg_panel.py")
+            daemon_target = "/opt/tg_updater/tg_daemon.py"
+            panel_target = "/opt/tg_updater/tg_panel.py"
+            res1, daemon_tmp = download_remote_file("tg_daemon.py", daemon_target)
+            res2, panel_tmp = download_remote_file("tg_panel.py", panel_target)
             
             if res1 == 0 and res2 == 0:
-                run_command(["sudo", "chmod", "+x", "/opt/tg_updater/tg_panel.py"])
-                run_command(["sudo", "chmod", "+x", "/opt/tg_updater/tg_daemon.py"])
-                run_command(["sudo", "chown", f"{SERVICE_USER}:{SERVICE_USER}", "/opt/tg_updater/tg_daemon.py"])
-                run_command(["sudo", "chown", f"{SERVICE_USER}:{SERVICE_USER}", "/opt/tg_updater/tg_panel.py"])
-                print(">> 正在重启后台服务...")
-                run_command(["sudo", "systemctl", "restart", "tg_name.service"])
-                print("\n✅ 更新成功！核心代码与后台服务均已同步至 GitHub 最新版本。")
-                print("⚠️ 提示：由于当前管理面板已载入内存，建议您输入 [0] 退出面板并重新敲击 'tg' 载入新版本界面。")
+                if not validate_python_file(daemon_tmp) or not validate_python_file(panel_tmp):
+                    run_command(["sudo", "rm", "-f", daemon_tmp, panel_tmp])
+                    print("\n❌ 更新失败！下载文件未通过 Python 语法校验，已取消覆盖。")
+                    input("按回车键返回主菜单...")
+                    continue
+
+                replace1 = replace_remote_file(daemon_tmp, daemon_target)
+                replace2 = replace_remote_file(panel_tmp, panel_target)
+                if replace1 == 0 and replace2 == 0:
+                    run_command(["sudo", "chmod", "+x", panel_target])
+                    run_command(["sudo", "chmod", "+x", daemon_target])
+                    run_command(["sudo", "chown", f"{SERVICE_USER}:{SERVICE_USER}", daemon_target])
+                    run_command(["sudo", "chown", f"{SERVICE_USER}:{SERVICE_USER}", panel_target])
+                    print(">> 正在重启后台服务...")
+                    run_command(["sudo", "systemctl", "restart", "tg_name.service"])
+                    print("\n✅ 更新成功！核心代码与后台服务均已同步至 GitHub 最新版本。")
+                    print("⚠️ 提示：由于当前管理面板已载入内存，建议您输入 [0] 退出面板并重新敲击 'tg' 载入新版本界面。")
+                else:
+                    print("\n❌ 更新失败！临时文件替换失败，请检查 /opt/tg_updater 权限。")
             else:
+                run_command(["sudo", "rm", "-f", daemon_tmp, panel_tmp])
                 print("\n❌ 更新失败！请检查 VPS 网络连接或 GitHub 仓库地址是否正确。")
             input("按回车键返回主菜单...")
             

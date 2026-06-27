@@ -8,7 +8,9 @@ import logging
 import asyncio
 import json
 import urllib.request
+import urllib.parse
 from telethon import TelegramClient
+from telethon.errors import FloodWaitError
 from telethon.tl.functions.account import UpdateProfileRequest
 
 BASE_DIR = os.path.dirname(__file__)
@@ -75,7 +77,8 @@ def load_api_credentials(allow_prompt=False):
 # 【天气模块】
 # ==========================================
 def fetch_weather_sync(city_name):
-    url = f"https://wttr.in/{city_name.replace(' ', '+')}?format=j1"
+    safe_city = urllib.parse.quote(city_name.strip())
+    url = f"https://wttr.in/{safe_city}?format=j1"
     req = urllib.request.Request(url, headers={'User-Agent': 'curl/7.68.0'})
     try:
         with urllib.request.urlopen(req, timeout=10) as response:
@@ -108,6 +111,7 @@ async def update_weather_loop(loop):
 # 【核心拼接模块】
 # ==========================================
 async def change_name_auto(client):
+    last_sent_name = None
     while True:
         try:
             now = time.localtime()
@@ -125,9 +129,16 @@ async def change_name_auto(client):
             
             raw_name = " ".join(parts)
             last_name = raw_name.translate(BOLD_MAP) if config['use_bold'] else raw_name
+            if last_name == last_sent_name:
+                await asyncio.sleep(60 - (time.time() % 60))
+                continue
             
             await client(UpdateProfileRequest(last_name=last_name))
+            last_sent_name = last_name
             logger.info(f'Updated -> {last_name}')
+        except FloodWaitError as e:
+            logger.warning(f"Flood wait: sleeping {e.seconds} seconds")
+            await asyncio.sleep(e.seconds)
                 
         except Exception as e:
             logger.error(f"Error: {e}")

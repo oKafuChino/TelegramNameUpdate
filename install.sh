@@ -17,7 +17,7 @@ fi
 # ==========================================
 echo ">> 正在安装必要的系统环境 (python3-venv)..."
 $SUDO apt-get update -y
-$SUDO apt-get install -y python3-venv python3-pip curl
+$SUDO apt-get install -y python3-venv curl
 
 if ! id -u "$SERVICE_USER" >/dev/null 2>&1; then
     $SUDO useradd --system --home "$PROJECT_DIR" --shell /usr/sbin/nologin "$SERVICE_USER"
@@ -43,7 +43,7 @@ $SUDO chmod +x "$PROJECT_DIR/tg_daemon.py"
 echo ">> 正在配置 Python 虚拟环境..."
 # 加上 sudo，确保在 /opt 目录下拥有绝对权限
 $SUDO python3 -m venv "$PROJECT_DIR/venv"
-$SUDO "$PROJECT_DIR/venv/bin/pip" install -r "$PROJECT_DIR/requirements.txt"
+$SUDO "$PROJECT_DIR/venv/bin/pip" install --no-cache-dir -r "$PROJECT_DIR/requirements.txt"
 $SUDO chown -R "$SERVICE_USER:$SERVICE_USER" "$PROJECT_DIR"
 
 
@@ -52,12 +52,14 @@ echo ">> 正在配置后台服务..."
 cat << EOF | $SUDO tee /etc/systemd/system/tg_name.service
 [Unit]
 Description=Telegram Name Updater Daemon
-After=network.target
+Wants=network-online.target
+After=network-online.target
 
 [Service]
 Type=simple
 WorkingDirectory=$PROJECT_DIR
 ExecStart=$PROJECT_DIR/venv/bin/python3 $PROJECT_DIR/tg_daemon.py
+Environment=PYTHONUNBUFFERED=1
 Restart=always
 RestartSec=10
 User=$SERVICE_USER

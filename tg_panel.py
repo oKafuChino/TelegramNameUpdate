@@ -13,7 +13,7 @@ import time
 # 【版本定义】
 # 每次修改代码推送到 GitHub 前，请手动提升此版本号
 # ==========================================
-CURRENT_VERSION = "v1.3.1"
+CURRENT_VERSION = "v1.3.2"
 
 CONFIG_FILE = os.path.join(os.path.dirname(__file__), 'config.json')
 SESSION_FILE = os.path.join(os.path.dirname(__file__), 'api_auth.session')

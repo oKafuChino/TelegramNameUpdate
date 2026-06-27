@@ -16,7 +16,7 @@ import secrets
 # 【版本定义】
 # 每次修改代码推送到 GitHub 前，请手动提升此版本号
 # ==========================================
-CURRENT_VERSION = "v1.4.2"
+CURRENT_VERSION = "v1.4.3"
 AUTHOR = "oKafuChino"
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -144,6 +144,7 @@ def render_menu(config):
     menu_line("12", "重启后台服务", "立即重载配置", "green")
     menu_line("13", "检查并更新", "从 GitHub 拉取核心脚本", "green")
     menu_line("14", "同步服务器时区", "改名显示将使用 UTC 偏移", "green")
+    menu_line("99", "一键卸载脚本", "停止服务并删除程序与配置", "red")
 
     print()
     menu_line("0", "退出管理面板", "", "red")
@@ -304,6 +305,42 @@ def validate_python_file(path):
 def replace_remote_file(tmp_target, target):
     return run_command(["sudo", "mv", tmp_target, target])
 
+def uninstall_script():
+    print("\n⚠️ 即将卸载 TelegramNameUpdate")
+    print("将删除以下内容:")
+    print("  - systemd 服务: tg_name.service")
+    print("  - 全局命令: /usr/local/bin/tg, /usr/local/bin/tg_py")
+    print("  - 程序目录: /opt/tg_updater")
+    print("  - 配置与登录凭证目录: /var/lib/tg_updater")
+    confirm = input("请输入 DELETE 确认卸载 (直接回车取消): ").strip()
+    if confirm != "DELETE":
+        input("已取消卸载，按回车键返回主菜单...")
+        return
+
+    project_dir = "/opt/tg_updater"
+    data_dir = "/var/lib/tg_updater"
+    allowed_dirs = {project_dir, data_dir}
+    for path in allowed_dirs:
+        if not path.startswith("/") or path in ("/", "/opt", "/var", "/var/lib"):
+            input("❌ 卸载路径校验失败，按回车键返回主菜单...")
+            return
+
+    print("\n正在停止并禁用服务...")
+    run_command(["sudo", "systemctl", "stop", "tg_name.service"])
+    run_command(["sudo", "systemctl", "disable", "tg_name.service"])
+    run_command(["sudo", "rm", "-f", "/etc/systemd/system/tg_name.service"])
+    run_command(["sudo", "systemctl", "daemon-reload"])
+
+    print("正在删除快捷命令...")
+    run_command(["sudo", "rm", "-f", "/usr/local/bin/tg", "/usr/local/bin/tg_py"])
+
+    print("正在删除程序和运行数据...")
+    run_command(["sudo", "rm", "-rf", project_dir])
+    run_command(["sudo", "rm", "-rf", data_dir])
+
+    print("\n✅ 卸载完成。")
+    sys.exit(0)
+
 def configure_name_order(config):
     item_keys = DEFAULT_NAME_ORDER
     print("\n当前输出顺序:")
@@ -347,11 +384,14 @@ def main_menu():
         config = load_config()
         render_menu(config)
         
-        choice = input(color("请输入选项 (0-14): ", "cyan", "bold")).strip()
+        choice = input(color("请输入选项 (0-14, 99): ", "cyan", "bold")).strip()
         
         if choice == '0':
             print("退出面板。")
             sys.exit()
+            
+        elif choice == '99':
+            uninstall_script()
             
         elif choice == '1':
             harden_code_files()

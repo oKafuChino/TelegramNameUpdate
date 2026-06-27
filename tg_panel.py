@@ -16,7 +16,7 @@ import secrets
 # 【版本定义】
 # 每次修改代码推送到 GitHub 前，请手动提升此版本号
 # ==========================================
-CURRENT_VERSION = "v1.4.3"
+CURRENT_VERSION = "v1.4.5"
 AUTHOR = "oKafuChino"
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -41,6 +41,8 @@ ORDER_LABELS = {
     "weather": "天气",
 }
 DEFAULT_CONFIG = {"show_time": True, "show_timezone": True, "show_date": False, "show_temp": True, "show_weather": True, "location": "Los Angeles", "use_bold": True, "name_order": DEFAULT_NAME_ORDER.copy()}
+BOOL_CONFIG_KEYS = ("show_time", "show_timezone", "show_date", "show_temp", "show_weather", "use_bold")
+MAX_LOCATION_LENGTH = 80
 USE_COLOR = sys.stdout.isatty() and os.environ.get("NO_COLOR") is None and os.environ.get("TERM") != "dumb"
 COLORS = {
     "reset": "\033[0m",
@@ -97,6 +99,22 @@ def format_name_order(order):
 
 def safe_display(value):
     return "".join(char if char.isprintable() else "?" for char in str(value))
+
+def sanitize_config(raw_config):
+    config = DEFAULT_CONFIG.copy()
+    if not isinstance(raw_config, dict):
+        raw_config = {}
+
+    for key in BOOL_CONFIG_KEYS:
+        if isinstance(raw_config.get(key), bool):
+            config[key] = raw_config[key]
+
+    location = raw_config.get("location")
+    if isinstance(location, str) and location.strip():
+        config["location"] = location.strip()[:MAX_LOCATION_LENGTH]
+
+    config["name_order"] = normalize_name_order(raw_config.get("name_order"))
+    return config
 
 def menu_line(key, label, detail="", accent="cyan"):
     key_text = color(pad_right(f"[{key}]", 4), accent, "bold")
@@ -161,6 +179,9 @@ def chown_runtime_files():
     if run_command(["id", "-u", SERVICE_USER], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL) != 0:
         return
     os.makedirs(DATA_DIR, exist_ok=True)
+    if not os.path.islink(DATA_DIR):
+        run_command(["sudo", "chown", f"{SERVICE_USER}:{SERVICE_USER}", DATA_DIR])
+        run_command(["sudo", "chmod", "700", DATA_DIR])
     for path in (CONFIG_FILE, SESSION_FILE, SESSION_JOURNAL_FILE, API_CONFIG_FILE):
         if os.path.exists(path) and not os.path.islink(path):
             try:
@@ -246,18 +267,15 @@ def extract_version_from_file(path):
     return match.group(1) if match else None
 
 def load_config():
-    config = DEFAULT_CONFIG.copy()
+    loaded = {}
     if not os.path.exists(CONFIG_FILE):
-        return config
+        return sanitize_config(loaded)
     try:
         with open(CONFIG_FILE, 'r', encoding='utf-8') as f:
             loaded = json.load(f)
-        if isinstance(loaded, dict):
-            config.update(loaded)
     except (OSError, json.JSONDecodeError) as e:
         print(f"⚠️ 配置文件读取失败，已使用默认配置: {e}")
-    config["name_order"] = normalize_name_order(config.get("name_order"))
-    return config
+    return sanitize_config(loaded)
 
 def write_json_atomic(path, data):
     os.makedirs(os.path.dirname(path), exist_ok=True)
@@ -277,22 +295,52 @@ def write_json_atomic(path, data):
 def save_config(config):
     write_json_atomic(CONFIG_FILE, config)
     chown_runtime_files()
-    run_command(["sudo", "systemctl", "restart", "tg_name.service"])
-    print("\n✅ 配置已保存，后台服务已自动重启！")
+    restart_code = run_command(["sudo", "systemctl", "restart", "tg_name.service"])
+    if restart_code == 0:
+        print("\n✅ 配置已保存，后台服务已自动重启！")
+    else:
+        print("\n⚠️ 配置已保存，但后台服务重启失败，请使用 [2] 查看日志。")
 
 def clear_screen():
     run_command(["clear"])
 
 def download_remote_file(filename, target):
-    tmp_target = f"{target}.{os.getpid()}.{secrets.token_hex(8)}.tmp"
-    result = run_command([
-        "sudo", "curl", "-fsSL",
-        "-H", "Cache-Control: no-cache",
-        "-H", "Pragma: no-cache",
-        remote_file_url(filename),
-        "-o", tmp_target
-    ])
-    return result, tmp_target
+    fd = None
+    tmp_target = None
+    try:
+        target_dir = os.path.dirname(target)
+        fd, tmp_target = tempfile.mkstemp(
+            prefix=f"{os.path.basename(target)}.{os.getpid()}.{secrets.token_hex(4)}.",
+            suffix=".tmp",
+            dir=target_dir
+        )
+        req = urllib.request.Request(
+            remote_file_url(filename),
+            headers={'Cache-Control': 'no-cache, no-store', 'Pragma': 'no-cache'}
+        )
+        with os.fdopen(fd, 'wb') as f:
+            fd = None
+            with urllib.request.urlopen(req, timeout=20) as response:
+                while True:
+                    chunk = response.read(65536)
+                    if not chunk:
+                        break
+                    f.write(chunk)
+        os.chmod(tmp_target, 0o644)
+        return 0, tmp_target
+    except Exception as e:
+        if fd is not None:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+        if tmp_target:
+            try:
+                os.unlink(tmp_target)
+            except OSError:
+                pass
+        print(f"下载 {filename} 失败: {e}")
+        return 1, tmp_target or ""
 
 def validate_python_file(path):
     return run_command([
@@ -305,7 +353,38 @@ def validate_python_file(path):
 def replace_remote_file(tmp_target, target):
     return run_command(["sudo", "mv", tmp_target, target])
 
+def replace_remote_files(file_pairs):
+    backup_suffix = f".bak.{os.getpid()}.{secrets.token_hex(4)}"
+    backups = []
+    replaced = []
+    for tmp_path, target_path in file_pairs:
+        backup_path = f"{target_path}{backup_suffix}"
+        if run_command(["sudo", "cp", "-p", target_path, backup_path]) != 0:
+            cleanup_temp_files(*(backup for _, backup in backups))
+            return False
+        backups.append((target_path, backup_path))
+
+    for tmp_path, target_path in file_pairs:
+        if replace_remote_file(tmp_path, target_path) != 0:
+            for restored_target, backup_path in replaced:
+                run_command(["sudo", "cp", "-p", backup_path, restored_target])
+            cleanup_temp_files(*(backup for _, backup in backups), *(tmp for tmp, _ in file_pairs))
+            return False
+        replaced.append((target_path, dict(backups)[target_path]))
+
+    cleanup_temp_files(*(backup for _, backup in backups))
+    return True
+
+def cleanup_temp_files(*paths):
+    existing_paths = [path for path in paths if path and os.path.exists(path)]
+    if existing_paths:
+        run_command(["sudo", "rm", "-f", *existing_paths])
+
 def uninstall_script():
+    if BASE_DIR != "/opt/tg_updater":
+        input("❌ 当前面板不在 /opt/tg_updater，已取消卸载以避免误删。按回车键返回主菜单...")
+        return
+
     print("\n⚠️ 即将卸载 TelegramNameUpdate")
     print("将删除以下内容:")
     print("  - systemd 服务: tg_name.service")
@@ -446,6 +525,9 @@ def main_menu():
         elif choice == '9':
             new_loc = input("请输入新的城市名称 (拼音或英文): ").strip()
             if new_loc:
+                if len(new_loc) > MAX_LOCATION_LENGTH:
+                    input(f"❌ 地区名称过长，请限制在 {MAX_LOCATION_LENGTH} 个字符内。按回车键返回主菜单...")
+                    continue
                 config['location'] = new_loc
                 save_config(config)
                 
@@ -463,6 +545,9 @@ def main_menu():
             input("按回车键返回主菜单...")
             
         elif choice == '13':
+            if BASE_DIR != "/opt/tg_updater":
+                input("❌ 当前面板不在 /opt/tg_updater，已取消更新以避免覆盖安装目录。按回车键返回主菜单...")
+                continue
             harden_code_files()
             print("\n>> 正在从 GitHub 检查最新版本...")
             remote_version = get_remote_version()
@@ -484,20 +569,20 @@ def main_menu():
             
             if res1 == 0 and res2 == 0:
                 if not validate_python_file(daemon_tmp) or not validate_python_file(panel_tmp):
-                    run_command(["sudo", "rm", "-f", daemon_tmp, panel_tmp])
+                    cleanup_temp_files(daemon_tmp, panel_tmp)
                     print("\n❌ 更新失败！下载文件未通过 Python 语法校验，已取消覆盖。")
                     input("按回车键返回主菜单...")
                     continue
 
                 downloaded_version = extract_version_from_file(panel_tmp)
                 if downloaded_version is None:
-                    run_command(["sudo", "rm", "-f", daemon_tmp, panel_tmp])
+                    cleanup_temp_files(daemon_tmp, panel_tmp)
                     print("\n❌ 更新失败！下载到的面板脚本缺少 CURRENT_VERSION，已取消覆盖。")
                     input("按回车键返回主菜单...")
                     continue
                 downloaded_compare = compare_versions(downloaded_version, CURRENT_VERSION)
                 if downloaded_compare is not None and downloaded_compare < 0:
-                    run_command(["sudo", "rm", "-f", daemon_tmp, panel_tmp])
+                    cleanup_temp_files(daemon_tmp, panel_tmp)
                     print(f"\n❌ 已取消更新：下载到的版本是 {downloaded_version}，低于当前版本 {CURRENT_VERSION}。")
                     print("请确认 GitHub main 分支已经推送最新代码，或等待 raw.githubusercontent.com 缓存刷新。")
                     input("按回车键返回主菜单...")
@@ -507,9 +592,7 @@ def main_menu():
                 elif downloaded_version:
                     print(f">> 下载文件版本确认: {downloaded_version}")
 
-                replace1 = replace_remote_file(daemon_tmp, daemon_target)
-                replace2 = replace_remote_file(panel_tmp, panel_target)
-                if replace1 == 0 and replace2 == 0:
+                if replace_remote_files(((daemon_tmp, daemon_target), (panel_tmp, panel_target))):
                     run_command(["sudo", "chmod", "+x", panel_target])
                     run_command(["sudo", "chmod", "+x", daemon_target])
                     run_command(["sudo", "chown", "root:root", daemon_target])
@@ -520,9 +603,10 @@ def main_menu():
                     print("\n✅ 更新成功！核心代码与后台服务均已同步至 GitHub 最新版本。")
                     print("⚠️ 提示：由于当前管理面板已载入内存，建议您输入 [0] 退出面板并重新敲击 'tg' 载入新版本界面。")
                 else:
-                    print("\n❌ 更新失败！临时文件替换失败，请检查 /opt/tg_updater 权限。")
+                    cleanup_temp_files(daemon_tmp, panel_tmp)
+                    print("\n❌ 更新失败！文件替换失败，已尝试恢复旧版本，请检查 /opt/tg_updater 权限。")
             else:
-                run_command(["sudo", "rm", "-f", daemon_tmp, panel_tmp])
+                cleanup_temp_files(daemon_tmp, panel_tmp)
                 print("\n❌ 更新失败！请检查 VPS 网络连接或 GitHub 仓库地址是否正确。")
             input("按回车键返回主菜单...")
             

@@ -38,6 +38,8 @@ ORDER_LABELS = {
     "weather": "天气",
 }
 DEFAULT_CONFIG = {"show_time": True, "show_timezone": True, "show_date": False, "show_temp": True, "show_weather": True, "location": "Los Angeles", "use_bold": True, "name_order": DEFAULT_NAME_ORDER.copy()}
+BOOL_CONFIG_KEYS = ("show_time", "show_timezone", "show_date", "show_temp", "show_weather", "use_bold")
+MAX_LOCATION_LENGTH = 80
 
 def normalize_name_order(order):
     if not isinstance(order, list):
@@ -54,15 +56,30 @@ def normalize_name_order(order):
 
     return normalized
 
-def load_config():
+def sanitize_config(raw_config):
     config = DEFAULT_CONFIG.copy()
+    if not isinstance(raw_config, dict):
+        raw_config = {}
+
+    for key in BOOL_CONFIG_KEYS:
+        if isinstance(raw_config.get(key), bool):
+            config[key] = raw_config[key]
+
+    location = raw_config.get("location")
+    if isinstance(location, str) and location.strip():
+        config["location"] = location.strip()[:MAX_LOCATION_LENGTH]
+
+    config["name_order"] = normalize_name_order(raw_config.get("name_order"))
+    return config
+
+def load_config():
+    loaded = {}
     try:
         with open(CONFIG_FILE, 'r', encoding='utf-8') as f:
-            config.update(json.load(f))
+            loaded = json.load(f)
     except Exception:
         pass
-    config["name_order"] = normalize_name_order(config.get("name_order"))
-    return config
+    return sanitize_config(loaded)
 
 def migrate_legacy_runtime_files():
     if DATA_DIR == BASE_DIR:
@@ -103,7 +120,10 @@ def load_api_credentials(allow_prompt=False):
     env_api_id = os.environ.get("TELEGRAM_API_ID")
     env_api_hash = os.environ.get("TELEGRAM_API_HASH")
     if env_api_id and env_api_hash:
-        return int(env_api_id), env_api_hash
+        try:
+            return int(env_api_id), env_api_hash
+        except ValueError as exc:
+            raise RuntimeError("环境变量 TELEGRAM_API_ID 必须是数字。") from exc
 
     try:
         with open(API_CONFIG_FILE, 'r', encoding='utf-8') as f:
@@ -115,8 +135,11 @@ def load_api_credentials(allow_prompt=False):
     if not allow_prompt:
         raise RuntimeError("缺少 Telegram API 凭证，请先运行 `tg` 并使用选项 [1] 初始化账号。")
 
-    api_id = int(input('请输入 api_id: ').strip())
+    raw_api_id = input('请输入 api_id: ').strip()
     api_hash = input('请输入 api_hash: ').strip()
+    if not raw_api_id.isdigit() or not api_hash:
+        raise RuntimeError("api_id 必须是数字，api_hash 不能为空。")
+    api_id = int(raw_api_id)
     os.makedirs(DATA_DIR, exist_ok=True)
     with open(API_CONFIG_FILE, 'w', encoding='utf-8') as f:
         json.dump({"api_id": api_id, "api_hash": api_hash}, f, indent=2)

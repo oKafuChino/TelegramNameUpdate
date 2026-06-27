@@ -55,9 +55,10 @@ $SUDO chmod +x "$PROJECT_DIR/tg_daemon.py"
 # 3. 创建虚拟环境并安装依赖
 # ==========================================
 echo ">> 正在配置 Python 虚拟环境..."
-# 加上 sudo，确保在 /opt 目录下拥有绝对权限
-$SUDO python3 -m venv "$PROJECT_DIR/venv"
-$SUDO "$PROJECT_DIR/venv/bin/pip" install --no-cache-dir -r "$PROJECT_DIR/requirements.txt"
+if [ ! -x "$PROJECT_DIR/venv/bin/python3" ]; then
+    $SUDO python3 -m venv "$PROJECT_DIR/venv"
+fi
+$SUDO "$PROJECT_DIR/venv/bin/pip" install --no-cache-dir --no-compile -r "$PROJECT_DIR/requirements.txt"
 $SUDO chown -R root:root "$PROJECT_DIR"
 $SUDO chmod 755 "$PROJECT_DIR"
 $SUDO chown -R "$SERVICE_USER:$SERVICE_USER" "$DATA_DIR"
@@ -79,10 +80,16 @@ WorkingDirectory=$PROJECT_DIR
 ExecStart=$PROJECT_DIR/venv/bin/python3 $PROJECT_DIR/tg_daemon.py
 Environment=TG_UPDATER_DATA_DIR=$DATA_DIR
 Environment=PYTHONUNBUFFERED=1
+Environment=PYTHONDONTWRITEBYTECODE=1
 Restart=always
 RestartSec=10
 User=$SERVICE_USER
 Group=$SERVICE_USER
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=full
 
 [Install]
 WantedBy=multi-user.target

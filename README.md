@@ -173,19 +173,6 @@ DELETE
 
 注意：卸载会删除 Telegram 登录 session 和本地配置。
 
-## 常见问题
-
-### 更新后配置会丢失吗？
-
-不会。程序代码位于 `/opt/tg_updater`，配置和 session 位于 `/var/lib/tg_updater`。自更新只覆盖核心脚本。
-
-### 为什么时区显示为 UTC+8，而不是 CST？
-
-脚本使用 UTC 偏移显示时区，避免 `CST` 这类缩写在不同地区含义不一致。
-
-### 为什么有 `__pycache__`？
-
-这是 Python 自动生成的缓存目录。项目已通过 `.gitignore` 忽略它，不会被 GitHub 识别为需要提交的文件。
 
 ## 更新日志
 
@@ -224,11 +211,3 @@ DELETE
 - 新增彩色终端面板
 - 新增 UTC 偏移时区显示
 - 新增服务器时区同步
-- 优化 `__pycache__` 忽略规则
-
-## 致谢
-
-本项目参考了以下开源项目的思路：
-
-- [xyou365/Telegram-Name-Updating](https://github.com/xyou365/Telegram-Name-Updating)
-

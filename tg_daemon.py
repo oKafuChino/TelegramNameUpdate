@@ -21,14 +21,16 @@ logger = logging.getLogger(__name__)
 
 BOLD_MAP = str.maketrans("0123456789", "𝟬𝟭𝟮𝟯𝟰𝟱𝟲𝟳𝟴𝟵")
 current_weather_data = {"temp": "", "emoji": ""}
-DEFAULT_CONFIG = {"show_time": True, "show_date": False, "show_temp": True, "show_weather": True, "location": "Los Angeles", "use_bold": True}
+DEFAULT_CONFIG = {"show_time": True, "show_timezone": True, "show_date": False, "show_temp": True, "show_weather": True, "location": "Los Angeles", "use_bold": True}
 
 def load_config():
+    config = DEFAULT_CONFIG.copy()
     try:
         with open(CONFIG_FILE, 'r', encoding='utf-8') as f:
-            return json.load(f)
+            config.update(json.load(f))
     except Exception:
-        return DEFAULT_CONFIG.copy()
+        pass
+    return config
 
 def load_api_credentials(allow_prompt=False):
     env_api_id = os.environ.get("TELEGRAM_API_ID")
@@ -98,11 +100,13 @@ async def change_name_auto(client):
             now = time.localtime()
             month_day = time.strftime("%m-%d", now)
             hour_minute = time.strftime("%H:%M", now)
+            timezone_name = time.strftime("%Z", now)
             config = load_config()
             parts = []
             
-            if config['show_date']: parts.append(month_day)
             if config['show_time']: parts.append(hour_minute)
+            if config['show_timezone'] and timezone_name: parts.append(timezone_name)
+            if config['show_date']: parts.append(month_day)
             if config['show_temp'] and current_weather_data['temp']: parts.append(current_weather_data['temp'])
             if config['show_weather'] and current_weather_data['emoji']: parts.append(current_weather_data['emoji'])
             

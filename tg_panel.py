@@ -13,7 +13,7 @@ import time
 # 【版本定义】
 # 每次修改代码推送到 GitHub 前，请手动提升此版本号
 # ==========================================
-CURRENT_VERSION = "v1.3.0"
+CURRENT_VERSION = "v1.3.1"
 
 CONFIG_FILE = os.path.join(os.path.dirname(__file__), 'config.json')
 SESSION_FILE = os.path.join(os.path.dirname(__file__), 'api_auth.session')
@@ -21,7 +21,7 @@ SESSION_JOURNAL_FILE = os.path.join(os.path.dirname(__file__), 'api_auth.session
 API_CONFIG_FILE = os.path.join(os.path.dirname(__file__), 'api_auth.json')
 REPO_URL = "https://raw.githubusercontent.com/oKafuChino/TelegramNameUpdate/main"
 SERVICE_USER = "tg_updater"
-DEFAULT_CONFIG = {"show_time": True, "show_date": False, "show_temp": True, "show_weather": True, "location": "Los Angeles", "use_bold": True}
+DEFAULT_CONFIG = {"show_time": True, "show_timezone": True, "show_date": False, "show_temp": True, "show_weather": True, "location": "Los Angeles", "use_bold": True}
 USE_COLOR = sys.stdout.isatty() and os.environ.get("NO_COLOR") is None and os.environ.get("TERM") != "dumb"
 COLORS = {
     "reset": "\033[0m",
@@ -48,7 +48,7 @@ def state_text(enabled):
     return color("○ 关闭", "red")
 
 def menu_line(key, label, detail="", accent="cyan"):
-    key_text = color(f"[{key:>2}]", accent, "bold")
+    key_text = color(f"[{key}]", accent, "bold")
     if detail:
         print(f"  {key_text} {label:<18} {color(detail, 'dim')}")
     else:
@@ -77,17 +77,18 @@ def render_menu(config):
 
     menu_section("展示内容")
     menu_line("3", "显示时间", state_text(config['show_time']), "magenta")
-    menu_line("4", "显示日期", state_text(config['show_date']), "magenta")
-    menu_line("5", "显示温度", state_text(config['show_temp']), "magenta")
-    menu_line("6", "显示天气", state_text(config['show_weather']), "magenta")
-    menu_line("7", "设置地区", f"当前: {config['location']}", "magenta")
+    menu_line("4", "显示时区", state_text(config['show_timezone']), "magenta")
+    menu_line("5", "显示日期", state_text(config['show_date']), "magenta")
+    menu_line("6", "显示温度", state_text(config['show_temp']), "magenta")
+    menu_line("7", "显示天气", state_text(config['show_weather']), "magenta")
     menu_line("8", "粗体显示", state_text(config['use_bold']), "magenta")
-    menu_line("9", "一键开启全部", "时间 / 日期 / 温度 / 天气 / 粗体", "magenta")
+    menu_line("9", "设置地区", f"当前: {config['location']}", "magenta")
+    menu_line("10", "一键开启全部", "时间 / 时区 / 日期 / 温度 / 天气 / 粗体", "magenta")
 
     menu_section("维护工具")
-    menu_line("10", "重启后台服务", "立即重载配置", "green")
-    menu_line("11", "检查并更新", "从 GitHub 拉取核心脚本", "green")
-    menu_line("12", "同步服务器时区", "按当前城市匹配 IANA 时区", "green")
+    menu_line("11", "重启后台服务", "立即重载配置", "green")
+    menu_line("12", "检查并更新", "从 GitHub 拉取核心脚本", "green")
+    menu_line("13", "同步服务器时区", "按当前城市匹配 IANA 时区", "green")
 
     print()
     menu_line("0", "退出管理面板", "", "red")
@@ -127,10 +128,12 @@ def get_remote_version():
     return None
 
 def load_config():
+    config = DEFAULT_CONFIG.copy()
     if not os.path.exists(CONFIG_FILE):
-        return DEFAULT_CONFIG.copy()
+        return config
     with open(CONFIG_FILE, 'r', encoding='utf-8') as f:
-        return json.load(f)
+        config.update(json.load(f))
+        return config
 
 def save_config(config):
     with open(CONFIG_FILE, 'w', encoding='utf-8') as f:
@@ -157,7 +160,7 @@ def main_menu():
         config = load_config()
         render_menu(config)
         
-        choice = input(color("请输入选项 (0-12): ", "cyan", "bold")).strip()
+        choice = input(color("请输入选项 (0-13): ", "cyan", "bold")).strip()
         
         if choice == '0':
             print("退出面板。")
@@ -193,38 +196,42 @@ def main_menu():
             save_config(config)
             
         elif choice == '4':
-            config['show_date'] = not config['show_date']
+            config['show_timezone'] = not config['show_timezone']
             save_config(config)
             
         elif choice == '5':
-            config['show_temp'] = not config['show_temp']
+            config['show_date'] = not config['show_date']
             save_config(config)
             
         elif choice == '6':
-            config['show_weather'] = not config['show_weather']
+            config['show_temp'] = not config['show_temp']
             save_config(config)
             
         elif choice == '7':
-            new_loc = input("请输入新的城市名称 (拼音或英文): ").strip()
-            if new_loc:
-                config['location'] = new_loc
-                save_config(config)
-                
+            config['show_weather'] = not config['show_weather']
+            save_config(config)
+            
         elif choice == '8':
             config['use_bold'] = not config['use_bold']
             save_config(config)
             
         elif choice == '9':
-            config.update({"show_time": True, "show_date": True, "show_temp": True, "show_weather": True, "use_bold": True})
+            new_loc = input("请输入新的城市名称 (拼音或英文): ").strip()
+            if new_loc:
+                config['location'] = new_loc
+                save_config(config)
+                
+        elif choice == '10':
+            config.update({"show_time": True, "show_timezone": True, "show_date": True, "show_temp": True, "show_weather": True, "use_bold": True})
             save_config(config)
             
-        elif choice == '10':
+        elif choice == '11':
             print("\n正在强制重启后台服务...")
             run_command(["sudo", "systemctl", "restart", "tg_name.service"])
             print("✅ 服务已重启，将立即触发一次强制更新！")
             input("按回车键返回主菜单...")
             
-        elif choice == '11':
+        elif choice == '12':
             print("\n>> 正在从 GitHub 检查最新版本...")
             remote_version = get_remote_version()
             if remote_version == CURRENT_VERSION:
@@ -249,7 +256,7 @@ def main_menu():
                 print("\n❌ 更新失败！请检查 VPS 网络连接或 GitHub 仓库地址是否正确。")
             input("按回车键返回主菜单...")
             
-        elif choice == '12':
+        elif choice == '13':
             loc = config.get('location', '').lower()
             # 建立常见城市与标准时区 (IANA) 的映射字典
             tz_mapping = {

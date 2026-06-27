@@ -1,5 +1,6 @@
 {
   "show_time": true,
+  "show_timezone": true,
   "show_date": false,
   "show_temp": true,
   "show_weather": true,

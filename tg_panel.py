@@ -21,6 +21,76 @@ API_CONFIG_FILE = os.path.join(os.path.dirname(__file__), 'api_auth.json')
 REPO_URL = "https://raw.githubusercontent.com/oKafuChino/TelegramNameUpdate/main"
 SERVICE_USER = "tg_updater"
 DEFAULT_CONFIG = {"show_time": True, "show_date": False, "show_temp": True, "show_weather": True, "location": "Los Angeles", "use_bold": True}
+USE_COLOR = sys.stdout.isatty() and os.environ.get("NO_COLOR") is None and os.environ.get("TERM") != "dumb"
+COLORS = {
+    "reset": "\033[0m",
+    "bold": "\033[1m",
+    "dim": "\033[2m",
+    "cyan": "\033[36m",
+    "blue": "\033[34m",
+    "green": "\033[32m",
+    "yellow": "\033[33m",
+    "red": "\033[31m",
+    "magenta": "\033[35m",
+    "white": "\033[37m",
+}
+
+def color(text, *styles):
+    if not USE_COLOR:
+        return text
+    prefix = "".join(COLORS[style] for style in styles if style in COLORS)
+    return f"{prefix}{text}{COLORS['reset']}"
+
+def state_text(enabled):
+    if enabled:
+        return color("● 开启", "green", "bold")
+    return color("○ 关闭", "red")
+
+def menu_line(key, label, detail="", accent="cyan"):
+    key_text = color(f"[{key:>2}]", accent, "bold")
+    if detail:
+        print(f"  {key_text} {label:<18} {color(detail, 'dim')}")
+    else:
+        print(f"  {key_text} {label}")
+
+def menu_section(title):
+    print()
+    print(color(f"  {title}", "yellow", "bold"))
+
+def box_row(text, highlight="", text_styles=()):
+    width = 54
+    plain_text = text + highlight
+    display_text = (color(text, *text_styles) if text_styles else text) + (color(highlight, "green", "bold") if highlight else "")
+    padding = " " * max(0, width - len(plain_text))
+    print(color("│", "cyan") + display_text + padding + color("│", "cyan"))
+
+def render_menu(config):
+    print(color("╭" + "─"*54 + "╮", "cyan"))
+    box_row("        Telegram 名字动态更新面板", text_styles=("bold", "white"))
+    box_row("        当前版本: ", CURRENT_VERSION)
+    print(color("╰" + "─"*54 + "╯", "cyan"))
+
+    menu_section("账号与状态")
+    menu_line("1", "更新账号 Session", "重新登录或更换账号", "blue")
+    menu_line("2", "查看运行日志", "最近 50 条 systemd 日志", "blue")
+
+    menu_section("展示内容")
+    menu_line("3", "显示时间", state_text(config['show_time']), "magenta")
+    menu_line("4", "显示日期", state_text(config['show_date']), "magenta")
+    menu_line("5", "显示温度", state_text(config['show_temp']), "magenta")
+    menu_line("6", "显示天气", state_text(config['show_weather']), "magenta")
+    menu_line("7", "设置地区", f"当前: {config['location']}", "magenta")
+    menu_line("8", "粗体显示", state_text(config['use_bold']), "magenta")
+    menu_line("9", "一键开启全部", "时间 / 日期 / 温度 / 天气 / 粗体", "magenta")
+
+    menu_section("维护工具")
+    menu_line("10", "重启后台服务", "立即重载配置", "green")
+    menu_line("11", "检查并更新", "从 GitHub 拉取核心脚本", "green")
+    menu_line("12", "同步服务器时区", "按当前城市匹配 IANA 时区", "green")
+
+    print()
+    menu_line("0", "退出管理面板", "", "red")
+    print(color("─"*56, "cyan"))
 
 def run_command(command, **kwargs):
     try:
@@ -69,27 +139,9 @@ def main_menu():
     while True:
         clear_screen()
         config = load_config()
+        render_menu(config)
         
-        print("="*48)
-        print("      ✨ Telegram 名字动态更新面板 ✨")
-        print(f"      当前版本: {CURRENT_VERSION}")
-        print("="*48)
-        print(f" [1]  更新账号 Session (重新登录)")
-        print(f" [2]  查看运行日志")
-        print(f" [3]  显示时间: {'✅ 开启' if config['show_time'] else '❌ 关闭'}")
-        print(f" [4]  显示日期: {'✅ 开启' if config['show_date'] else '❌ 关闭'}")
-        print(f" [5]  显示温度: {'✅ 开启' if config['show_temp'] else '❌ 关闭'}")
-        print(f" [6]  显示天气: {'✅ 开启' if config['show_weather'] else '❌ 关闭'}")
-        print(f" [7]  设置地区: 当前 [{config['location']}]")
-        print(f" [8]  粗体显示: {'✅ 开启' if config['use_bold'] else '❌ 关闭'}")
-        print(f" [9]  🚀 一键开启所有展示项目")
-        print(f" [10] 🔄 强制重启后台服务")
-        print(f" [11] ⬇️ 从 GitHub 检查并自动更新脚本")
-        print(f" [12] 🌍 同步服务器时区至设定城市")
-        print(f" [0]  退出管理面板")
-        print("="*48)
-        
-        choice = input("请输入选项 (0-12): ").strip()
+        choice = input(color("请输入选项 (0-12): ", "cyan", "bold")).strip()
         
         if choice == '0':
             print("退出面板。")

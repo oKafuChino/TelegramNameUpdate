@@ -32,6 +32,19 @@ def load_config():
         pass
     return config
 
+def get_utc_offset_text(local_time):
+    offset_seconds = getattr(local_time, "tm_gmtoff", None)
+    if offset_seconds is None:
+        offset_seconds = time.mktime(local_time) - time.mktime(time.gmtime(time.mktime(local_time)))
+
+    sign = "+" if offset_seconds >= 0 else "-"
+    offset_seconds = abs(int(offset_seconds))
+    hours, remainder = divmod(offset_seconds, 3600)
+    minutes = remainder // 60
+    if minutes:
+        return f"UTC{sign}{hours}:{minutes:02d}"
+    return f"UTC{sign}{hours}"
+
 def load_api_credentials(allow_prompt=False):
     env_api_id = os.environ.get("TELEGRAM_API_ID")
     env_api_hash = os.environ.get("TELEGRAM_API_HASH")
@@ -100,7 +113,7 @@ async def change_name_auto(client):
             now = time.localtime()
             month_day = time.strftime("%m-%d", now)
             hour_minute = time.strftime("%H:%M", now)
-            timezone_name = time.strftime("%Z", now)
+            timezone_name = get_utc_offset_text(now)
             config = load_config()
             parts = []
             

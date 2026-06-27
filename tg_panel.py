@@ -13,7 +13,7 @@ import time
 # 【版本定义】
 # 每次修改代码推送到 GitHub 前，请手动提升此版本号
 # ==========================================
-CURRENT_VERSION = "v1.3.2"
+CURRENT_VERSION = "v1.3.4"
 
 CONFIG_FILE = os.path.join(os.path.dirname(__file__), 'config.json')
 SESSION_FILE = os.path.join(os.path.dirname(__file__), 'api_auth.session')
@@ -88,7 +88,7 @@ def render_menu(config):
     menu_section("维护工具")
     menu_line("11", "重启后台服务", "立即重载配置", "green")
     menu_line("12", "检查并更新", "从 GitHub 拉取核心脚本", "green")
-    menu_line("13", "同步服务器时区", "按当前城市匹配 IANA 时区", "green")
+    menu_line("13", "同步服务器时区", "改名显示将使用 UTC 偏移", "green")
 
     print()
     menu_line("0", "退出管理面板", "", "red")
@@ -280,7 +280,7 @@ def main_menu():
             if target_tz:
                 print(f"\n>> 识别到设定城市 [{config['location']}]，正在修改 VPS 系统时区为: {target_tz}...")
                 run_command(["sudo", "timedatectl", "set-timezone", target_tz])
-                print("✅ 时区同步成功！")
+                print("✅ 时区同步成功！改名显示将按当前服务器时区显示 UTC 偏移。")
             else:
                 print(f"\n❌ 无法自动匹配城市 [{config['location']}] 的标准时区。")
                 print("您可以手动输入 IANA 标准时区格式（例如: Asia/Shanghai, America/New_York）")
@@ -288,7 +288,7 @@ def main_menu():
                 if manual_tz:
                     res = run_command(["sudo", "timedatectl", "set-timezone", manual_tz], stderr=subprocess.DEVNULL)
                     if res == 0:
-                        print(f"✅ 时区已手动设置为: {manual_tz}！")
+                        print(f"✅ 时区已手动设置为: {manual_tz}！改名显示将按当前服务器时区显示 UTC 偏移。")
                     else:
                         print("❌ 设置失败，请检查时区名称是否拼写正确。")
             

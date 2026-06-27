@@ -6,56 +6,73 @@ import sys
 import json
 import urllib.request
 import re
+import subprocess
 
 # ==========================================
 # 【版本定义】
 # 每次修改代码推送到 GitHub 前，请手动提升此版本号
 # ==========================================
-CURRENT_VERSION = "v1.1.0"
+CURRENT_VERSION = "v1.2.0"
 
 CONFIG_FILE = os.path.join(os.path.dirname(__file__), 'config.json')
 SESSION_FILE = os.path.join(os.path.dirname(__file__), 'api_auth.session')
+SESSION_JOURNAL_FILE = os.path.join(os.path.dirname(__file__), 'api_auth.session-journal')
+API_CONFIG_FILE = os.path.join(os.path.dirname(__file__), 'api_auth.json')
 REPO_URL = "https://raw.githubusercontent.com/oKafuChino/TelegramNameUpdate/main"
+SERVICE_USER = "tg_updater"
+DEFAULT_CONFIG = {"show_time": True, "show_date": False, "show_temp": True, "show_weather": True, "location": "Los Angeles", "use_bold": True}
 
-def check_for_updates():
-    """静默检查 GitHub 上的最新版本"""
+def run_command(command, **kwargs):
+    try:
+        return subprocess.run(command, check=False, **kwargs).returncode
+    except FileNotFoundError:
+        print(f"命令不存在: {command[0]}")
+        return 127
+
+def chown_runtime_files():
+    if run_command(["id", "-u", SERVICE_USER], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL) != 0:
+        return
+    for path in (CONFIG_FILE, SESSION_FILE, SESSION_JOURNAL_FILE, API_CONFIG_FILE):
+        if os.path.exists(path):
+            run_command(["sudo", "chown", f"{SERVICE_USER}:{SERVICE_USER}", path])
+
+def get_remote_version():
+    """检查 GitHub 上的最新版本"""
     try:
         req = urllib.request.Request(f"{REPO_URL}/tg_panel.py", headers={'Cache-Control': 'no-cache'})
         with urllib.request.urlopen(req, timeout=1.5) as response:
             content = response.read().decode('utf-8')
             match = re.search(r'CURRENT_VERSION\s*=\s*"([^"]+)"', content)
             if match:
-                remote_version = match.group(1)
-                if remote_version != CURRENT_VERSION:
-                    return f" | 🚀 发现新版本 {remote_version}，请按 [11] 更新"
+                return match.group(1)
     except Exception:
         pass 
-    return ""
+    return None
 
 def load_config():
     if not os.path.exists(CONFIG_FILE):
-        return {"show_time": True, "show_date": False, "show_temp": True, "show_weather": True, "location": "Los Angeles", "use_bold": True}
-    with open(CONFIG_FILE, 'r') as f:
+        return DEFAULT_CONFIG.copy()
+    with open(CONFIG_FILE, 'r', encoding='utf-8') as f:
         return json.load(f)
 
 def save_config(config):
-    with open(CONFIG_FILE, 'w') as f:
-        json.dump(config, f, indent=4)
-    os.system("sudo systemctl restart tg_name.service")
+    with open(CONFIG_FILE, 'w', encoding='utf-8') as f:
+        json.dump(config, f, indent=4, ensure_ascii=False)
+    chown_runtime_files()
+    run_command(["sudo", "systemctl", "restart", "tg_name.service"])
     print("\n✅ 配置已保存，后台服务已自动重启！")
 
 def clear_screen():
-    os.system('clear')
+    run_command(["clear"])
 
 def main_menu():
     while True:
         clear_screen()
-        update_msg = check_for_updates()
         config = load_config()
         
         print("="*48)
         print("      ✨ Telegram 名字动态更新面板 ✨")
-        print(f"      当前版本: {CURRENT_VERSION}{update_msg}")
+        print(f"      当前版本: {CURRENT_VERSION}")
         print("="*48)
         print(f" [1]  更新账号 Session (重新登录)")
         print(f" [2]  查看运行日志")
@@ -79,18 +96,27 @@ def main_menu():
             sys.exit()
             
         elif choice == '1':
-            if os.path.exists(SESSION_FILE):
-                os.remove(SESSION_FILE)
+            print("正在停止后台服务...")
+            run_command(["sudo", "systemctl", "stop", "tg_name.service"])
+            for path in (SESSION_FILE, SESSION_JOURNAL_FILE):
+                if os.path.exists(path):
+                    os.remove(path)
             print("旧凭证已删除，请按提示重新登录：")
             venv_python = os.path.join(os.path.dirname(__file__), 'venv', 'bin', 'python3')
-            os.system(f"{venv_python} {os.path.join(os.path.dirname(__file__), 'tg_daemon.py')} --login")
-            print("\n正在重启后台服务...")
-            os.system("sudo systemctl restart tg_name.service")
-            input("✅ 配置已生效，按回车键返回主菜单...")
+            if not os.path.exists(venv_python):
+                venv_python = sys.executable
+            login_result = run_command([venv_python, os.path.join(os.path.dirname(__file__), 'tg_daemon.py'), '--login'])
+            if login_result == 0:
+                chown_runtime_files()
+                print("\n正在重启后台服务...")
+                run_command(["sudo", "systemctl", "restart", "tg_name.service"])
+                input("✅ 配置已生效，按回车键返回主菜单...")
+            else:
+                input("❌ 登录失败，后台服务未重启。按回车键返回主菜单...")
             
         elif choice == '2':
             print("\n--- 最近 50 条系统运行日志 ---\n")
-            os.system("sudo journalctl -u tg_name.service -n 50 --no-pager")
+            run_command(["sudo", "journalctl", "-u", "tg_name.service", "-n", "50", "--no-pager"])
             print("\n------------------------------\n")
             input("按回车键返回主菜单...")
             
@@ -126,20 +152,30 @@ def main_menu():
             
         elif choice == '10':
             print("\n正在强制重启后台服务...")
-            os.system("sudo systemctl restart tg_name.service")
+            run_command(["sudo", "systemctl", "restart", "tg_name.service"])
             print("✅ 服务已重启，将立即触发一次强制更新！")
             input("按回车键返回主菜单...")
             
         elif choice == '11':
-            print("\n>> 正在从 GitHub 检查并拉取最新版本代码...")
-            res1 = os.system(f"sudo curl -sL '{REPO_URL}/tg_daemon.py' -o /opt/tg_updater/tg_daemon.py")
-            res2 = os.system(f"sudo curl -sL '{REPO_URL}/tg_panel.py' -o /opt/tg_updater/tg_panel.py")
+            print("\n>> 正在从 GitHub 检查最新版本...")
+            remote_version = get_remote_version()
+            if remote_version == CURRENT_VERSION:
+                input(f"✅ 当前已是最新版本 ({CURRENT_VERSION})，按回车键返回主菜单...")
+                continue
+            if remote_version:
+                print(f">> 发现新版本 {remote_version}，正在拉取最新代码...")
+            else:
+                print(">> 无法获取远程版本号，仍尝试拉取最新代码...")
+            res1 = run_command(["sudo", "curl", "-fsSL", f"{REPO_URL}/tg_daemon.py", "-o", "/opt/tg_updater/tg_daemon.py"])
+            res2 = run_command(["sudo", "curl", "-fsSL", f"{REPO_URL}/tg_panel.py", "-o", "/opt/tg_updater/tg_panel.py"])
             
             if res1 == 0 and res2 == 0:
-                os.system("sudo chmod +x /opt/tg_updater/tg_panel.py")
-                os.system("sudo chmod +x /opt/tg_updater/tg_daemon.py")
+                run_command(["sudo", "chmod", "+x", "/opt/tg_updater/tg_panel.py"])
+                run_command(["sudo", "chmod", "+x", "/opt/tg_updater/tg_daemon.py"])
+                run_command(["sudo", "chown", f"{SERVICE_USER}:{SERVICE_USER}", "/opt/tg_updater/tg_daemon.py"])
+                run_command(["sudo", "chown", f"{SERVICE_USER}:{SERVICE_USER}", "/opt/tg_updater/tg_panel.py"])
                 print(">> 正在重启后台服务...")
-                os.system("sudo systemctl restart tg_name.service")
+                run_command(["sudo", "systemctl", "restart", "tg_name.service"])
                 print("\n✅ 更新成功！核心代码与后台服务均已同步至 GitHub 最新版本。")
                 print("⚠️ 提示：由于当前管理面板已载入内存，建议您输入 [0] 退出面板并重新敲击 'tg' 载入新版本界面。")
             else:
@@ -169,21 +205,21 @@ def main_menu():
             target_tz = tz_mapping.get(loc)
             if target_tz:
                 print(f"\n>> 识别到设定城市 [{config['location']}]，正在修改 VPS 系统时区为: {target_tz}...")
-                os.system(f"sudo timedatectl set-timezone {target_tz}")
+                run_command(["sudo", "timedatectl", "set-timezone", target_tz])
                 print("✅ 时区同步成功！")
             else:
                 print(f"\n❌ 无法自动匹配城市 [{config['location']}] 的标准时区。")
                 print("您可以手动输入 IANA 标准时区格式（例如: Asia/Shanghai, America/New_York）")
                 manual_tz = input("请输入标准时区 (直接回车取消): ").strip()
                 if manual_tz:
-                    res = os.system(f"sudo timedatectl set-timezone {manual_tz} 2>/dev/null")
+                    res = run_command(["sudo", "timedatectl", "set-timezone", manual_tz], stderr=subprocess.DEVNULL)
                     if res == 0:
                         print(f"✅ 时区已手动设置为: {manual_tz}！")
                     else:
                         print("❌ 设置失败，请检查时区名称是否拼写正确。")
             
             print("\n正在重启后台服务刷新显示时间...")
-            os.system("sudo systemctl restart tg_name.service")
+            run_command(["sudo", "systemctl", "restart", "tg_name.service"])
             input("按回车键返回主菜单...")
 
 if __name__ == "__main__":

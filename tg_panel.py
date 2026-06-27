@@ -144,9 +144,9 @@ def render_menu(config):
     menu_line("12", "重启后台服务", "立即重载配置", "green")
     menu_line("13", "检查并更新", "从 GitHub 拉取核心脚本", "green")
     menu_line("14", "同步服务器时区", "改名显示将使用 UTC 偏移", "green")
-    menu_line("99", "一键卸载脚本", "停止服务并删除程序与配置", "red")
 
     print()
+    menu_line("99", "一键卸载脚本", "停止服务并删除程序与配置", "red")
     menu_line("0", "退出管理面板", "", "red")
     print(color("─"*56, "cyan"))
 

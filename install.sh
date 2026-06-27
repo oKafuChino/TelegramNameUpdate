@@ -3,6 +3,7 @@
 set -euo pipefail
 
 PROJECT_DIR="/opt/tg_updater"
+DATA_DIR="/var/lib/tg_updater"
 REPO_URL="https://raw.githubusercontent.com/oKafuChino/TelegramNameUpdate/main"
 SERVICE_USER="tg_updater"
 
@@ -20,7 +21,7 @@ $SUDO apt-get update -y
 $SUDO apt-get install -y python3-venv curl
 
 if ! id -u "$SERVICE_USER" >/dev/null 2>&1; then
-    $SUDO useradd --system --home "$PROJECT_DIR" --shell /usr/sbin/nologin "$SERVICE_USER"
+    $SUDO useradd --system --home "$DATA_DIR" --shell /usr/sbin/nologin "$SERVICE_USER"
 fi
 
 # ==========================================
@@ -28,11 +29,24 @@ fi
 # ==========================================
 echo ">> 正在从 GitHub 下载最新版本代码..."
 $SUDO mkdir -p "$PROJECT_DIR"
+$SUDO mkdir -p "$DATA_DIR"
 
-$SUDO curl -fsSL "$REPO_URL/config.json" -o "$PROJECT_DIR/config.json"
 $SUDO curl -fsSL "$REPO_URL/tg_daemon.py" -o "$PROJECT_DIR/tg_daemon.py"
 $SUDO curl -fsSL "$REPO_URL/tg_panel.py" -o "$PROJECT_DIR/tg_panel.py"
 $SUDO curl -fsSL "$REPO_URL/requirements.txt" -o "$PROJECT_DIR/requirements.txt"
+
+if [ -f "$PROJECT_DIR/api_auth.json" ] && [ ! -f "$DATA_DIR/api_auth.json" ]; then
+    $SUDO mv "$PROJECT_DIR/api_auth.json" "$DATA_DIR/api_auth.json"
+fi
+if [ -f "$PROJECT_DIR/api_auth.session" ] && [ ! -f "$DATA_DIR/api_auth.session" ]; then
+    $SUDO mv "$PROJECT_DIR/api_auth.session" "$DATA_DIR/api_auth.session"
+fi
+if [ -f "$PROJECT_DIR/api_auth.session-journal" ] && [ ! -f "$DATA_DIR/api_auth.session-journal" ]; then
+    $SUDO mv "$PROJECT_DIR/api_auth.session-journal" "$DATA_DIR/api_auth.session-journal"
+fi
+if [ ! -f "$DATA_DIR/config.json" ]; then
+    $SUDO curl -fsSL "$REPO_URL/config.json" -o "$DATA_DIR/config.json"
+fi
 
 $SUDO chmod +x "$PROJECT_DIR/tg_panel.py"
 $SUDO chmod +x "$PROJECT_DIR/tg_daemon.py"
@@ -44,7 +58,11 @@ echo ">> 正在配置 Python 虚拟环境..."
 # 加上 sudo，确保在 /opt 目录下拥有绝对权限
 $SUDO python3 -m venv "$PROJECT_DIR/venv"
 $SUDO "$PROJECT_DIR/venv/bin/pip" install --no-cache-dir -r "$PROJECT_DIR/requirements.txt"
-$SUDO chown -R "$SERVICE_USER:$SERVICE_USER" "$PROJECT_DIR"
+$SUDO chown -R root:root "$PROJECT_DIR"
+$SUDO chmod 755 "$PROJECT_DIR"
+$SUDO chown -R "$SERVICE_USER:$SERVICE_USER" "$DATA_DIR"
+$SUDO chmod 700 "$DATA_DIR"
+$SUDO find "$DATA_DIR" -type f -exec chmod 600 {} \;
 
 
 # 4. 配置 systemd 服务
@@ -59,6 +77,7 @@ After=network-online.target
 Type=simple
 WorkingDirectory=$PROJECT_DIR
 ExecStart=$PROJECT_DIR/venv/bin/python3 $PROJECT_DIR/tg_daemon.py
+Environment=TG_UPDATER_DATA_DIR=$DATA_DIR
 Environment=PYTHONUNBUFFERED=1
 Restart=always
 RestartSec=10

@@ -9,18 +9,27 @@ import re
 import subprocess
 import time
 import unicodedata
+import tempfile
+import secrets
 
 # ==========================================
 # 【版本定义】
 # 每次修改代码推送到 GitHub 前，请手动提升此版本号
 # ==========================================
-CURRENT_VERSION = "v1.4.1"
+CURRENT_VERSION = "v1.4.2"
 AUTHOR = "oKafuChino"
 
-CONFIG_FILE = os.path.join(os.path.dirname(__file__), 'config.json')
-SESSION_FILE = os.path.join(os.path.dirname(__file__), 'api_auth.session')
-SESSION_JOURNAL_FILE = os.path.join(os.path.dirname(__file__), 'api_auth.session-journal')
-API_CONFIG_FILE = os.path.join(os.path.dirname(__file__), 'api_auth.json')
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+DEFAULT_DATA_DIR = "/var/lib/tg_updater" if BASE_DIR == "/opt/tg_updater" else BASE_DIR
+DATA_DIR = os.environ.get("TG_UPDATER_DATA_DIR", DEFAULT_DATA_DIR)
+CONFIG_FILE = os.path.join(DATA_DIR, 'config.json')
+SESSION_FILE = os.path.join(DATA_DIR, 'api_auth.session')
+SESSION_JOURNAL_FILE = os.path.join(DATA_DIR, 'api_auth.session-journal')
+API_CONFIG_FILE = os.path.join(DATA_DIR, 'api_auth.json')
+LEGACY_CONFIG_FILE = os.path.join(BASE_DIR, 'config.json')
+LEGACY_SESSION_FILE = os.path.join(BASE_DIR, 'api_auth.session')
+LEGACY_SESSION_JOURNAL_FILE = os.path.join(BASE_DIR, 'api_auth.session-journal')
+LEGACY_API_CONFIG_FILE = os.path.join(BASE_DIR, 'api_auth.json')
 REPO_URL = "https://raw.githubusercontent.com/oKafuChino/TelegramNameUpdate/main"
 SERVICE_USER = "tg_updater"
 DEFAULT_NAME_ORDER = ["time", "timezone", "date", "temp", "weather"]
@@ -86,6 +95,9 @@ def normalize_name_order(order):
 def format_name_order(order):
     return " > ".join(ORDER_LABELS[item] for item in normalize_name_order(order))
 
+def safe_display(value):
+    return "".join(char if char.isprintable() else "?" for char in str(value))
+
 def menu_line(key, label, detail="", accent="cyan"):
     key_text = color(pad_right(f"[{key}]", 4), accent, "bold")
     label_text = pad_right(label, 18)
@@ -124,14 +136,14 @@ def render_menu(config):
     menu_line("6", "显示温度", state_text(config['show_temp']), "magenta")
     menu_line("7", "显示天气", state_text(config['show_weather']), "magenta")
     menu_line("8", "粗体显示", state_text(config['use_bold']), "magenta")
-    menu_line("9", "设置地区", f"当前: {config['location']}", "magenta")
-    menu_line("10", "一键开启全部", "时间 / 时区 / 日期 / 温度 / 天气 / 粗体", "magenta")
-    menu_line("14", "输出顺序", format_name_order(config["name_order"]), "magenta")
+    menu_line("9", "设置地区", f"当前: {safe_display(config['location'])}", "magenta")
+    menu_line("10", "输出顺序", format_name_order(config["name_order"]), "magenta")
+    menu_line("11", "一键开启全部", "时间 / 时区 / 日期 / 温度 / 天气 / 粗体", "magenta")
 
     menu_section("维护工具")
-    menu_line("11", "重启后台服务", "立即重载配置", "green")
-    menu_line("12", "检查并更新", "从 GitHub 拉取核心脚本", "green")
-    menu_line("13", "同步服务器时区", "改名显示将使用 UTC 偏移", "green")
+    menu_line("12", "重启后台服务", "立即重载配置", "green")
+    menu_line("13", "检查并更新", "从 GitHub 拉取核心脚本", "green")
+    menu_line("14", "同步服务器时区", "改名显示将使用 UTC 偏移", "green")
 
     print()
     menu_line("0", "退出管理面板", "", "red")
@@ -147,9 +159,42 @@ def run_command(command, **kwargs):
 def chown_runtime_files():
     if run_command(["id", "-u", SERVICE_USER], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL) != 0:
         return
+    os.makedirs(DATA_DIR, exist_ok=True)
     for path in (CONFIG_FILE, SESSION_FILE, SESSION_JOURNAL_FILE, API_CONFIG_FILE):
-        if os.path.exists(path):
+        if os.path.exists(path) and not os.path.islink(path):
+            try:
+                os.chmod(path, 0o600)
+            except OSError:
+                pass
             run_command(["sudo", "chown", f"{SERVICE_USER}:{SERVICE_USER}", path])
+            run_command(["sudo", "chmod", "600", path])
+
+def migrate_legacy_runtime_files():
+    if DATA_DIR == BASE_DIR:
+        return
+
+    os.makedirs(DATA_DIR, exist_ok=True)
+    pairs = (
+        (LEGACY_CONFIG_FILE, CONFIG_FILE),
+        (LEGACY_API_CONFIG_FILE, API_CONFIG_FILE),
+        (LEGACY_SESSION_FILE, SESSION_FILE),
+        (LEGACY_SESSION_JOURNAL_FILE, SESSION_JOURNAL_FILE),
+    )
+    for source, target in pairs:
+        if os.path.exists(source) and not os.path.exists(target) and not os.path.islink(source):
+            run_command(["sudo", "mv", source, target])
+    chown_runtime_files()
+
+def harden_code_files():
+    if BASE_DIR != "/opt/tg_updater":
+        return
+
+    run_command(["sudo", "chown", "-R", "root:root", BASE_DIR])
+    run_command(["sudo", "chmod", "755", BASE_DIR])
+    for filename in ("tg_panel.py", "tg_daemon.py"):
+        path = os.path.join(BASE_DIR, filename)
+        if os.path.exists(path):
+            run_command(["sudo", "chmod", "755", path])
 
 def remote_file_url(filename):
     return f"{REPO_URL}/{filename}?t={int(time.time())}"
@@ -213,9 +258,23 @@ def load_config():
     config["name_order"] = normalize_name_order(config.get("name_order"))
     return config
 
+def write_json_atomic(path, data):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    fd, tmp_path = tempfile.mkstemp(prefix=".config.", suffix=".tmp", dir=os.path.dirname(path), text=True)
+    try:
+        with os.fdopen(fd, 'w', encoding='utf-8') as f:
+            json.dump(data, f, indent=4, ensure_ascii=False)
+        os.chmod(tmp_path, 0o600)
+        os.replace(tmp_path, path)
+    except Exception:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
+
 def save_config(config):
-    with open(CONFIG_FILE, 'w', encoding='utf-8') as f:
-        json.dump(config, f, indent=4, ensure_ascii=False)
+    write_json_atomic(CONFIG_FILE, config)
     chown_runtime_files()
     run_command(["sudo", "systemctl", "restart", "tg_name.service"])
     print("\n✅ 配置已保存，后台服务已自动重启！")
@@ -224,7 +283,7 @@ def clear_screen():
     run_command(["clear"])
 
 def download_remote_file(filename, target):
-    tmp_target = f"{target}.tmp"
+    tmp_target = f"{target}.{os.getpid()}.{secrets.token_hex(8)}.tmp"
     result = run_command([
         "sudo", "curl", "-fsSL",
         "-H", "Cache-Control: no-cache",
@@ -282,6 +341,7 @@ def configure_name_order(config):
     input(f"✅ 输出顺序已更新为: {format_name_order(config['name_order'])}，按回车键返回主菜单...")
 
 def main_menu():
+    migrate_legacy_runtime_files()
     while True:
         clear_screen()
         config = load_config()
@@ -294,6 +354,7 @@ def main_menu():
             sys.exit()
             
         elif choice == '1':
+            harden_code_files()
             print("正在停止后台服务...")
             run_command(["sudo", "systemctl", "stop", "tg_name.service"])
             for path in (SESSION_FILE, SESSION_JOURNAL_FILE):
@@ -349,16 +410,20 @@ def main_menu():
                 save_config(config)
                 
         elif choice == '10':
+            configure_name_order(config)
+                
+        elif choice == '11':
             config.update({"show_time": True, "show_timezone": True, "show_date": True, "show_temp": True, "show_weather": True, "use_bold": True})
             save_config(config)
             
-        elif choice == '11':
+        elif choice == '12':
             print("\n正在强制重启后台服务...")
             run_command(["sudo", "systemctl", "restart", "tg_name.service"])
             print("✅ 服务已重启，将立即触发一次强制更新！")
             input("按回车键返回主菜单...")
             
-        elif choice == '12':
+        elif choice == '13':
+            harden_code_files()
             print("\n>> 正在从 GitHub 检查最新版本...")
             remote_version = get_remote_version()
             remote_compare = compare_versions(remote_version, CURRENT_VERSION)
@@ -385,6 +450,11 @@ def main_menu():
                     continue
 
                 downloaded_version = extract_version_from_file(panel_tmp)
+                if downloaded_version is None:
+                    run_command(["sudo", "rm", "-f", daemon_tmp, panel_tmp])
+                    print("\n❌ 更新失败！下载到的面板脚本缺少 CURRENT_VERSION，已取消覆盖。")
+                    input("按回车键返回主菜单...")
+                    continue
                 downloaded_compare = compare_versions(downloaded_version, CURRENT_VERSION)
                 if downloaded_compare is not None and downloaded_compare < 0:
                     run_command(["sudo", "rm", "-f", daemon_tmp, panel_tmp])
@@ -402,8 +472,9 @@ def main_menu():
                 if replace1 == 0 and replace2 == 0:
                     run_command(["sudo", "chmod", "+x", panel_target])
                     run_command(["sudo", "chmod", "+x", daemon_target])
-                    run_command(["sudo", "chown", f"{SERVICE_USER}:{SERVICE_USER}", daemon_target])
-                    run_command(["sudo", "chown", f"{SERVICE_USER}:{SERVICE_USER}", panel_target])
+                    run_command(["sudo", "chown", "root:root", daemon_target])
+                    run_command(["sudo", "chown", "root:root", panel_target])
+                    harden_code_files()
                     print(">> 正在重启后台服务...")
                     run_command(["sudo", "systemctl", "restart", "tg_name.service"])
                     print("\n✅ 更新成功！核心代码与后台服务均已同步至 GitHub 最新版本。")
@@ -415,7 +486,7 @@ def main_menu():
                 print("\n❌ 更新失败！请检查 VPS 网络连接或 GitHub 仓库地址是否正确。")
             input("按回车键返回主菜单...")
             
-        elif choice == '13':
+        elif choice == '14':
             loc = config.get('location', '').lower()
             # 建立常见城市与标准时区 (IANA) 的映射字典
             tz_mapping = {
@@ -454,9 +525,5 @@ def main_menu():
             print("\n正在重启后台服务刷新显示时间...")
             run_command(["sudo", "systemctl", "restart", "tg_name.service"])
             input("按回车键返回主菜单...")
-
-        elif choice == '14':
-            configure_name_order(config)
-
 if __name__ == "__main__":
     main_menu()

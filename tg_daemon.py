@@ -14,9 +14,15 @@ from telethon.errors import FloodWaitError
 from telethon.tl.functions.account import UpdateProfileRequest
 
 BASE_DIR = os.path.dirname(__file__)
-CONFIG_FILE = os.path.join(BASE_DIR, 'config.json')
-API_CONFIG_FILE = os.path.join(BASE_DIR, 'api_auth.json')
-api_auth_file = os.path.join(BASE_DIR, 'api_auth')
+DEFAULT_DATA_DIR = "/var/lib/tg_updater" if os.path.abspath(BASE_DIR) == "/opt/tg_updater" else BASE_DIR
+DATA_DIR = os.environ.get("TG_UPDATER_DATA_DIR", DEFAULT_DATA_DIR)
+CONFIG_FILE = os.path.join(DATA_DIR, 'config.json')
+API_CONFIG_FILE = os.path.join(DATA_DIR, 'api_auth.json')
+api_auth_file = os.path.join(DATA_DIR, 'api_auth')
+LEGACY_CONFIG_FILE = os.path.join(BASE_DIR, 'config.json')
+LEGACY_API_CONFIG_FILE = os.path.join(BASE_DIR, 'api_auth.json')
+LEGACY_SESSION_FILE = os.path.join(BASE_DIR, 'api_auth.session')
+LEGACY_SESSION_JOURNAL_FILE = os.path.join(BASE_DIR, 'api_auth.session-journal')
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -58,6 +64,28 @@ def load_config():
     config["name_order"] = normalize_name_order(config.get("name_order"))
     return config
 
+def migrate_legacy_runtime_files():
+    if DATA_DIR == BASE_DIR:
+        return
+
+    try:
+        os.makedirs(DATA_DIR, exist_ok=True)
+    except OSError:
+        return
+
+    pairs = (
+        (LEGACY_CONFIG_FILE, CONFIG_FILE),
+        (LEGACY_API_CONFIG_FILE, API_CONFIG_FILE),
+        (LEGACY_SESSION_FILE, api_auth_file + '.session'),
+        (LEGACY_SESSION_JOURNAL_FILE, api_auth_file + '.session-journal'),
+    )
+    for source, target in pairs:
+        try:
+            if os.path.exists(source) and not os.path.exists(target) and not os.path.islink(source):
+                os.replace(source, target)
+        except OSError:
+            pass
+
 def get_utc_offset_text(local_time):
     offset_seconds = getattr(local_time, "tm_gmtoff", None)
     if offset_seconds is None:
@@ -89,6 +117,7 @@ def load_api_credentials(allow_prompt=False):
 
     api_id = int(input('请输入 api_id: ').strip())
     api_hash = input('请输入 api_hash: ').strip()
+    os.makedirs(DATA_DIR, exist_ok=True)
     with open(API_CONFIG_FILE, 'w', encoding='utf-8') as f:
         json.dump({"api_id": api_id, "api_hash": api_hash}, f, indent=2)
     try:
@@ -96,6 +125,14 @@ def load_api_credentials(allow_prompt=False):
     except OSError:
         pass
     return api_id, api_hash
+
+def harden_runtime_files():
+    for path in (API_CONFIG_FILE, api_auth_file + '.session', api_auth_file + '.session-journal'):
+        try:
+            if os.path.exists(path) and not os.path.islink(path):
+                os.chmod(path, 0o600)
+        except OSError:
+            pass
 
 # ==========================================
 # 【天气模块】
@@ -173,6 +210,7 @@ async def change_name_auto(client):
 # 【主入口】
 # ==========================================
 async def main():
+    migrate_legacy_runtime_files()
     login_only = len(sys.argv) > 1 and sys.argv[1] == '--login'
     session_exists = os.path.exists(api_auth_file+'.session')
     if not login_only and not session_exists and not sys.stdin.isatty():
@@ -182,6 +220,7 @@ async def main():
         
     client = TelegramClient(api_auth_file, api_id, api_hash)
     await client.start()
+    harden_runtime_files()
     
     # 如果仅为登录模式，则启动后直接退出
     if login_only:

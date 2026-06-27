@@ -23,7 +23,30 @@ logger = logging.getLogger(__name__)
 
 BOLD_MAP = str.maketrans("0123456789", "𝟬𝟭𝟮𝟯𝟰𝟱𝟲𝟳𝟴𝟵")
 current_weather_data = {"temp": "", "emoji": ""}
-DEFAULT_CONFIG = {"show_time": True, "show_timezone": True, "show_date": False, "show_temp": True, "show_weather": True, "location": "Los Angeles", "use_bold": True}
+DEFAULT_NAME_ORDER = ["time", "timezone", "date", "temp", "weather"]
+ORDER_LABELS = {
+    "time": "时间",
+    "timezone": "时区",
+    "date": "日期",
+    "temp": "温度",
+    "weather": "天气",
+}
+DEFAULT_CONFIG = {"show_time": True, "show_timezone": True, "show_date": False, "show_temp": True, "show_weather": True, "location": "Los Angeles", "use_bold": True, "name_order": DEFAULT_NAME_ORDER.copy()}
+
+def normalize_name_order(order):
+    if not isinstance(order, list):
+        order = []
+
+    normalized = []
+    for item in order:
+        if item in ORDER_LABELS and item not in normalized:
+            normalized.append(item)
+
+    for item in DEFAULT_NAME_ORDER:
+        if item not in normalized:
+            normalized.append(item)
+
+    return normalized
 
 def load_config():
     config = DEFAULT_CONFIG.copy()
@@ -32,6 +55,7 @@ def load_config():
             config.update(json.load(f))
     except Exception:
         pass
+    config["name_order"] = normalize_name_order(config.get("name_order"))
     return config
 
 def get_utc_offset_text(local_time):
@@ -119,13 +143,14 @@ async def change_name_auto(client):
             hour_minute = time.strftime("%H:%M", now)
             timezone_name = get_utc_offset_text(now)
             config = load_config()
-            parts = []
-            
-            if config['show_time']: parts.append(hour_minute)
-            if config['show_timezone'] and timezone_name: parts.append(timezone_name)
-            if config['show_date']: parts.append(month_day)
-            if config['show_temp'] and current_weather_data['temp']: parts.append(current_weather_data['temp'])
-            if config['show_weather'] and current_weather_data['emoji']: parts.append(current_weather_data['emoji'])
+            values = {
+                "time": hour_minute if config['show_time'] else "",
+                "timezone": timezone_name if config['show_timezone'] else "",
+                "date": month_day if config['show_date'] else "",
+                "temp": current_weather_data['temp'] if config['show_temp'] else "",
+                "weather": current_weather_data['emoji'] if config['show_weather'] else "",
+            }
+            parts = [values[item] for item in config["name_order"] if values.get(item)]
             
             raw_name = " ".join(parts)
             last_name = raw_name.translate(BOLD_MAP) if config['use_bold'] else raw_name

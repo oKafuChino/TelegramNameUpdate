@@ -14,7 +14,7 @@ import unicodedata
 # 【版本定义】
 # 每次修改代码推送到 GitHub 前，请手动提升此版本号
 # ==========================================
-CURRENT_VERSION = "v1.3.6"
+CURRENT_VERSION = "v1.3.7"
 AUTHOR = "oKafuChino"
 
 CONFIG_FILE = os.path.join(os.path.dirname(__file__), 'config.json')
@@ -23,7 +23,15 @@ SESSION_JOURNAL_FILE = os.path.join(os.path.dirname(__file__), 'api_auth.session
 API_CONFIG_FILE = os.path.join(os.path.dirname(__file__), 'api_auth.json')
 REPO_URL = "https://raw.githubusercontent.com/oKafuChino/TelegramNameUpdate/main"
 SERVICE_USER = "tg_updater"
-DEFAULT_CONFIG = {"show_time": True, "show_timezone": True, "show_date": False, "show_temp": True, "show_weather": True, "location": "Los Angeles", "use_bold": True}
+DEFAULT_NAME_ORDER = ["time", "timezone", "date", "temp", "weather"]
+ORDER_LABELS = {
+    "time": "时间",
+    "timezone": "时区",
+    "date": "日期",
+    "temp": "温度",
+    "weather": "天气",
+}
+DEFAULT_CONFIG = {"show_time": True, "show_timezone": True, "show_date": False, "show_temp": True, "show_weather": True, "location": "Los Angeles", "use_bold": True, "name_order": DEFAULT_NAME_ORDER.copy()}
 USE_COLOR = sys.stdout.isatty() and os.environ.get("NO_COLOR") is None and os.environ.get("TERM") != "dumb"
 COLORS = {
     "reset": "\033[0m",
@@ -59,6 +67,24 @@ def state_text(enabled):
     if enabled:
         return color("● 开启", "green", "bold")
     return color("○ 关闭", "red")
+
+def normalize_name_order(order):
+    if not isinstance(order, list):
+        order = []
+
+    normalized = []
+    for item in order:
+        if item in ORDER_LABELS and item not in normalized:
+            normalized.append(item)
+
+    for item in DEFAULT_NAME_ORDER:
+        if item not in normalized:
+            normalized.append(item)
+
+    return normalized
+
+def format_name_order(order):
+    return " > ".join(ORDER_LABELS[item] for item in normalize_name_order(order))
 
 def menu_line(key, label, detail="", accent="cyan"):
     key_text = color(pad_right(f"[{key}]", 4), accent, "bold")
@@ -100,6 +126,7 @@ def render_menu(config):
     menu_line("8", "粗体显示", state_text(config['use_bold']), "magenta")
     menu_line("9", "设置地区", f"当前: {config['location']}", "magenta")
     menu_line("10", "一键开启全部", "时间 / 时区 / 日期 / 温度 / 天气 / 粗体", "magenta")
+    menu_line("14", "输出顺序", format_name_order(config["name_order"]), "magenta")
 
     menu_section("维护工具")
     menu_line("11", "重启后台服务", "立即重载配置", "green")
@@ -154,6 +181,7 @@ def load_config():
             config.update(loaded)
     except (OSError, json.JSONDecodeError) as e:
         print(f"⚠️ 配置文件读取失败，已使用默认配置: {e}")
+    config["name_order"] = normalize_name_order(config.get("name_order"))
     return config
 
 def save_config(config):
@@ -188,13 +216,49 @@ def validate_python_file(path):
 def replace_remote_file(tmp_target, target):
     return run_command(["sudo", "mv", tmp_target, target])
 
+def configure_name_order(config):
+    item_keys = DEFAULT_NAME_ORDER
+    print("\n当前输出顺序:")
+    print(f"  {format_name_order(config['name_order'])}")
+    print("\n可选字段:")
+    for index, key in enumerate(item_keys, 1):
+        print(f"  {index}. {ORDER_LABELS[key]}")
+    print("\n请输入新的顺序，例如 1,2,3,4,5 或 3,1,2,4,5")
+    raw_order = input("新顺序 (直接回车取消): ").strip()
+    if not raw_order:
+        return
+
+    selected = []
+    for part in raw_order.replace("，", ",").split(","):
+        part = part.strip()
+        if not part:
+            continue
+        if not part.isdigit():
+            input("❌ 输入包含非数字项，按回车键返回主菜单...")
+            return
+        index = int(part)
+        if index < 1 or index > len(item_keys):
+            input("❌ 输入序号超出范围，按回车键返回主菜单...")
+            return
+        key = item_keys[index - 1]
+        if key not in selected:
+            selected.append(key)
+
+    if not selected:
+        input("❌ 未输入有效顺序，按回车键返回主菜单...")
+        return
+
+    config["name_order"] = normalize_name_order(selected)
+    save_config(config)
+    input(f"✅ 输出顺序已更新为: {format_name_order(config['name_order'])}，按回车键返回主菜单...")
+
 def main_menu():
     while True:
         clear_screen()
         config = load_config()
         render_menu(config)
         
-        choice = input(color("请输入选项 (0-13): ", "cyan", "bold")).strip()
+        choice = input(color("请输入选项 (0-14): ", "cyan", "bold")).strip()
         
         if choice == '0':
             print("退出面板。")
@@ -343,6 +407,9 @@ def main_menu():
             print("\n正在重启后台服务刷新显示时间...")
             run_command(["sudo", "systemctl", "restart", "tg_name.service"])
             input("按回车键返回主菜单...")
+
+        elif choice == '14':
+            configure_name_order(config)
 
 if __name__ == "__main__":
     main_menu()

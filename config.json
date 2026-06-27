@@ -5,5 +5,12 @@
   "show_temp": true,
   "show_weather": true,
   "location": "Los Angeles",
-  "use_bold": true
+  "use_bold": true,
+  "name_order": [
+    "time",
+    "timezone",
+    "date",
+    "temp",
+    "weather"
+  ]
 }

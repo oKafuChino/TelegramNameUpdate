@@ -1,6 +1,6 @@
 # ✨ TelegramNameUpdate
 
-TelegramNameUpdate 是一个轻量的 Telegram Last Name 自动更新脚本。它会通过 Telegram API 定时修改账号姓氏，让 Last Name 显示当前时间、UTC 时区偏移、日期、温度和天气状态。
+TelegramNameUpdate 是一个轻量的 Telegram Last Name 自动更新脚本。它会通过 Telegram API 定时修改账号Last Name，让 Last Name 显示当前时间、UTC 时区偏移、日期、温度和天气状态等。
 
 项目自带终端管理面板，安装后输入 `tg` 即可管理登录、显示项、输出顺序、更新、日志、时区同步和卸载。
 

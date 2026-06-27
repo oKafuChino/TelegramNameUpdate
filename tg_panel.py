@@ -14,7 +14,7 @@ import unicodedata
 # 【版本定义】
 # 每次修改代码推送到 GitHub 前，请手动提升此版本号
 # ==========================================
-CURRENT_VERSION = "v1.4.0"
+CURRENT_VERSION = "v1.4.1"
 AUTHOR = "oKafuChino"
 
 CONFIG_FILE = os.path.join(os.path.dirname(__file__), 'config.json')
@@ -169,6 +169,35 @@ def get_remote_version():
     except Exception:
         pass 
     return None
+
+def parse_version(version):
+    if not version:
+        return None
+    numbers = re.findall(r'\d+', version)
+    if not numbers:
+        return None
+    return tuple(int(number) for number in numbers)
+
+def compare_versions(left, right):
+    left_parts = parse_version(left)
+    right_parts = parse_version(right)
+    if left_parts is None or right_parts is None:
+        return None
+
+    max_len = max(len(left_parts), len(right_parts))
+    left_parts += (0,) * (max_len - len(left_parts))
+    right_parts += (0,) * (max_len - len(right_parts))
+    return (left_parts > right_parts) - (left_parts < right_parts)
+
+def extract_version_from_file(path):
+    try:
+        with open(path, 'r', encoding='utf-8') as f:
+            content = f.read()
+    except OSError:
+        return None
+
+    match = re.search(r'CURRENT_VERSION\s*=\s*"([^"]+)"', content)
+    return match.group(1) if match else None
 
 def load_config():
     config = DEFAULT_CONFIG.copy()
@@ -332,10 +361,15 @@ def main_menu():
         elif choice == '12':
             print("\n>> 正在从 GitHub 检查最新版本...")
             remote_version = get_remote_version()
-            if remote_version == CURRENT_VERSION:
-                print(f">> 远程版本号与本地相同 ({CURRENT_VERSION})，仍将重新拉取核心脚本以避免缓存或本地文件不一致。")
+            remote_compare = compare_versions(remote_version, CURRENT_VERSION)
+            if remote_compare == 0:
+                print(f">> GitHub 返回版本与本地相同 ({CURRENT_VERSION})，将继续拉取并校验实际下载文件。")
+            elif remote_compare and remote_compare > 0:
+                print(f">> GitHub 返回新版本 {remote_version}，正在拉取最新代码...")
+            elif remote_compare and remote_compare < 0:
+                print(f">> GitHub 返回版本 {remote_version}，低于本地版本 {CURRENT_VERSION}，将下载后再次校验，避免误降级。")
             elif remote_version:
-                print(f">> 发现新版本 {remote_version}，正在拉取最新代码...")
+                print(f">> GitHub 返回版本 {remote_version}，正在拉取并校验实际下载文件...")
             else:
                 print(">> 无法获取远程版本号，仍尝试拉取最新代码...")
             daemon_target = "/opt/tg_updater/tg_daemon.py"
@@ -349,6 +383,19 @@ def main_menu():
                     print("\n❌ 更新失败！下载文件未通过 Python 语法校验，已取消覆盖。")
                     input("按回车键返回主菜单...")
                     continue
+
+                downloaded_version = extract_version_from_file(panel_tmp)
+                downloaded_compare = compare_versions(downloaded_version, CURRENT_VERSION)
+                if downloaded_compare is not None and downloaded_compare < 0:
+                    run_command(["sudo", "rm", "-f", daemon_tmp, panel_tmp])
+                    print(f"\n❌ 已取消更新：下载到的版本是 {downloaded_version}，低于当前版本 {CURRENT_VERSION}。")
+                    print("请确认 GitHub main 分支已经推送最新代码，或等待 raw.githubusercontent.com 缓存刷新。")
+                    input("按回车键返回主菜单...")
+                    continue
+                if downloaded_compare == 0:
+                    print(f">> 下载文件版本与本地相同 ({CURRENT_VERSION})，继续覆盖以同步文件内容。")
+                elif downloaded_version:
+                    print(f">> 下载文件版本确认: {downloaded_version}")
 
                 replace1 = replace_remote_file(daemon_tmp, daemon_target)
                 replace2 = replace_remote_file(panel_tmp, panel_target)

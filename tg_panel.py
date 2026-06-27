@@ -7,12 +7,13 @@ import json
 import urllib.request
 import re
 import subprocess
+import time
 
 # ==========================================
 # 【版本定义】
 # 每次修改代码推送到 GitHub 前，请手动提升此版本号
 # ==========================================
-CURRENT_VERSION = "v1.2.1"
+CURRENT_VERSION = "v1.3.0"
 
 CONFIG_FILE = os.path.join(os.path.dirname(__file__), 'config.json')
 SESSION_FILE = os.path.join(os.path.dirname(__file__), 'api_auth.session')
@@ -106,10 +107,16 @@ def chown_runtime_files():
         if os.path.exists(path):
             run_command(["sudo", "chown", f"{SERVICE_USER}:{SERVICE_USER}", path])
 
+def remote_file_url(filename):
+    return f"{REPO_URL}/{filename}?t={int(time.time())}"
+
 def get_remote_version():
     """检查 GitHub 上的最新版本"""
     try:
-        req = urllib.request.Request(f"{REPO_URL}/tg_panel.py", headers={'Cache-Control': 'no-cache'})
+        req = urllib.request.Request(
+            remote_file_url("tg_panel.py"),
+            headers={'Cache-Control': 'no-cache, no-store', 'Pragma': 'no-cache'}
+        )
         with urllib.request.urlopen(req, timeout=1.5) as response:
             content = response.read().decode('utf-8')
             match = re.search(r'CURRENT_VERSION\s*=\s*"([^"]+)"', content)
@@ -134,6 +141,15 @@ def save_config(config):
 
 def clear_screen():
     run_command(["clear"])
+
+def download_remote_file(filename, target):
+    return run_command([
+        "sudo", "curl", "-fsSL",
+        "-H", "Cache-Control: no-cache",
+        "-H", "Pragma: no-cache",
+        remote_file_url(filename),
+        "-o", target
+    ])
 
 def main_menu():
     while True:
@@ -212,14 +228,13 @@ def main_menu():
             print("\n>> 正在从 GitHub 检查最新版本...")
             remote_version = get_remote_version()
             if remote_version == CURRENT_VERSION:
-                input(f"✅ 当前已是最新版本 ({CURRENT_VERSION})，按回车键返回主菜单...")
-                continue
-            if remote_version:
+                print(f">> 远程版本号与本地相同 ({CURRENT_VERSION})，仍将重新拉取核心脚本以避免缓存或本地文件不一致。")
+            elif remote_version:
                 print(f">> 发现新版本 {remote_version}，正在拉取最新代码...")
             else:
                 print(">> 无法获取远程版本号，仍尝试拉取最新代码...")
-            res1 = run_command(["sudo", "curl", "-fsSL", f"{REPO_URL}/tg_daemon.py", "-o", "/opt/tg_updater/tg_daemon.py"])
-            res2 = run_command(["sudo", "curl", "-fsSL", f"{REPO_URL}/tg_panel.py", "-o", "/opt/tg_updater/tg_panel.py"])
+            res1 = download_remote_file("tg_daemon.py", "/opt/tg_updater/tg_daemon.py")
+            res2 = download_remote_file("tg_panel.py", "/opt/tg_updater/tg_panel.py")
             
             if res1 == 0 and res2 == 0:
                 run_command(["sudo", "chmod", "+x", "/opt/tg_updater/tg_panel.py"])

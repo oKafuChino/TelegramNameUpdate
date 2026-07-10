@@ -10,12 +10,20 @@ SERVICE_USER="tg_updater"
 if [ "$(id -u)" -eq 0 ]; then
     SUDO=""
 else
+    if ! command -v sudo >/dev/null 2>&1; then
+        echo ">> 安装失败：请使用 root 运行，或先安装 sudo。" >&2
+        exit 1
+    fi
     SUDO="sudo"
 fi
 
 SERVICE_WAS_ACTIVE=false
 if $SUDO systemctl is-active --quiet tg_name.service 2>/dev/null; then
     SERVICE_WAS_ACTIVE=true
+fi
+SERVICE_WAS_ENABLED=false
+if $SUDO systemctl is-enabled --quiet tg_name.service 2>/dev/null; then
+    SERVICE_WAS_ENABLED=true
 fi
 
 # ==========================================
@@ -24,9 +32,32 @@ fi
 echo ">> 正在安装必要的系统环境 (python3-venv)..."
 $SUDO apt-get update -y
 $SUDO apt-get install -y python3-venv curl
+python3 -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 7) else "Python 3.7 or newer is required")'
 
-if ! id -u "$SERVICE_USER" >/dev/null 2>&1; then
-    $SUDO useradd --system --home "$DATA_DIR" --shell /usr/sbin/nologin "$SERVICE_USER"
+SERVICE_USER_EXISTS=false
+if id -u "$SERVICE_USER" >/dev/null 2>&1; then
+    SERVICE_UID="$(id -u "$SERVICE_USER")"
+    if [ "$SERVICE_UID" -eq 0 ] || [ "$SERVICE_UID" -ge 1000 ]; then
+        echo ">> 安装失败：$SERVICE_USER 已存在但不是安全的系统账号，请先处理同名用户。" >&2
+        exit 1
+    fi
+    SERVICE_USER_EXISTS=true
+fi
+
+if getent group "$SERVICE_USER" >/dev/null 2>&1; then
+    SERVICE_GID="$(getent group "$SERVICE_USER" | cut -d: -f3)"
+    if [ "$SERVICE_GID" -eq 0 ] || [ "$SERVICE_GID" -ge 1000 ]; then
+        echo ">> 安装失败：$SERVICE_USER 同名用户组不是安全的系统组，请先处理。" >&2
+        exit 1
+    fi
+else
+    $SUDO groupadd --system "$SERVICE_USER"
+fi
+
+if $SERVICE_USER_EXISTS; then
+    $SUDO usermod --gid "$SERVICE_USER" --home "$DATA_DIR" --shell /usr/sbin/nologin "$SERVICE_USER"
+else
+    $SUDO useradd --system --gid "$SERVICE_USER" --home "$DATA_DIR" --shell /usr/sbin/nologin "$SERVICE_USER"
 fi
 
 # ==========================================
@@ -81,6 +112,7 @@ for path in sys.argv[1:]:
 DAEMON_EXISTED=false
 PANEL_EXISTED=false
 REQUIREMENTS_EXISTED=false
+UNIT_EXISTED=false
 if $SUDO test -f "$PROJECT_DIR/tg_daemon.py"; then
     $SUDO cp -p "$PROJECT_DIR/tg_daemon.py" "$TMP_DIR/tg_daemon.py.backup"
     DAEMON_EXISTED=true
@@ -93,40 +125,80 @@ if $SUDO test -f "$PROJECT_DIR/requirements.txt"; then
     $SUDO cp -p "$PROJECT_DIR/requirements.txt" "$TMP_DIR/requirements.txt.backup"
     REQUIREMENTS_EXISTED=true
 fi
+if $SUDO test -f /etc/systemd/system/tg_name.service; then
+    $SUDO cp -p /etc/systemd/system/tg_name.service "$TMP_DIR/tg_name.service.backup"
+    UNIT_EXISTED=true
+fi
+
+restore_previous_install() {
+    trap - ERR
+    set +e
+    $SUDO systemctl stop tg_name.service
+    if $DAEMON_EXISTED; then $SUDO install -m 755 "$TMP_DIR/tg_daemon.py.backup" "$PROJECT_DIR/tg_daemon.py"; else $SUDO rm -f "$PROJECT_DIR/tg_daemon.py"; fi
+    if $PANEL_EXISTED; then $SUDO install -m 755 "$TMP_DIR/tg_panel.py.backup" "$PROJECT_DIR/tg_panel.py"; else $SUDO rm -f "$PROJECT_DIR/tg_panel.py"; fi
+    if $REQUIREMENTS_EXISTED; then
+        $SUDO install -m 644 "$TMP_DIR/requirements.txt.backup" "$PROJECT_DIR/requirements.txt"
+        $SUDO "$PROJECT_DIR/venv/bin/pip" install --no-cache-dir --no-compile -r "$PROJECT_DIR/requirements.txt"
+    else
+        $SUDO rm -f "$PROJECT_DIR/requirements.txt"
+    fi
+    if $UNIT_EXISTED; then
+        $SUDO install -m 644 "$TMP_DIR/tg_name.service.backup" /etc/systemd/system/tg_name.service
+    else
+        $SUDO rm -f /etc/systemd/system/tg_name.service /etc/systemd/system/multi-user.target.wants/tg_name.service
+    fi
+    $SUDO systemctl daemon-reload
+    if $SERVICE_WAS_ENABLED; then $SUDO systemctl enable tg_name.service; else $SUDO systemctl disable tg_name.service; fi
+    if $SERVICE_WAS_ACTIVE; then $SUDO systemctl restart tg_name.service; fi
+    set -e
+}
+
+ROLLBACK_NEEDED=false
+rollback_on_error() {
+    exit_code=$?
+    trap - ERR
+    if $ROLLBACK_NEEDED; then
+        echo ">> 安装过程中发生错误，正在恢复安装前版本..." >&2
+        restore_previous_install
+    fi
+    exit "$exit_code"
+}
+trap rollback_on_error ERR
+
+# 先完成依赖安装，避免 pip 失败后留下已更新但无法运行的核心代码。
+echo ">> 正在配置 Python 虚拟环境..."
+if [ ! -x "$PROJECT_DIR/venv/bin/python3" ]; then
+    $SUDO python3 -m venv "$PROJECT_DIR/venv"
+fi
+$SUDO "$PROJECT_DIR/venv/bin/pip" install --no-cache-dir --no-compile -r "$TMP_DIR/requirements.txt"
 
 if ! $SUDO install -m 755 "$TMP_DIR/tg_daemon.py" "$PROJECT_DIR/tg_daemon.py" || \
    ! $SUDO install -m 755 "$TMP_DIR/tg_panel.py" "$PROJECT_DIR/tg_panel.py" || \
    ! $SUDO install -m 644 "$TMP_DIR/requirements.txt" "$PROJECT_DIR/requirements.txt"; then
     echo ">> 核心文件安装失败，正在恢复旧版本..."
-    if $DAEMON_EXISTED; then $SUDO install -m 755 "$TMP_DIR/tg_daemon.py.backup" "$PROJECT_DIR/tg_daemon.py"; else $SUDO rm -f "$PROJECT_DIR/tg_daemon.py"; fi
-    if $PANEL_EXISTED; then $SUDO install -m 755 "$TMP_DIR/tg_panel.py.backup" "$PROJECT_DIR/tg_panel.py"; else $SUDO rm -f "$PROJECT_DIR/tg_panel.py"; fi
-    if $REQUIREMENTS_EXISTED; then $SUDO install -m 644 "$TMP_DIR/requirements.txt.backup" "$PROJECT_DIR/requirements.txt"; else $SUDO rm -f "$PROJECT_DIR/requirements.txt"; fi
+    restore_previous_install
     exit 1
 fi
+ROLLBACK_NEEDED=true
 
-if [ -f "$PROJECT_DIR/api_auth.json" ] && [ ! -f "$DATA_DIR/api_auth.json" ]; then
+if $SUDO test -f "$PROJECT_DIR/api_auth.json" && ! $SUDO test -e "$DATA_DIR/api_auth.json"; then
     $SUDO mv "$PROJECT_DIR/api_auth.json" "$DATA_DIR/api_auth.json"
 fi
-if [ -f "$PROJECT_DIR/api_auth.session" ] && [ ! -f "$DATA_DIR/api_auth.session" ]; then
+if $SUDO test -f "$PROJECT_DIR/api_auth.session" && ! $SUDO test -e "$DATA_DIR/api_auth.session"; then
     $SUDO mv "$PROJECT_DIR/api_auth.session" "$DATA_DIR/api_auth.session"
 fi
-if [ -f "$PROJECT_DIR/api_auth.session-journal" ] && [ ! -f "$DATA_DIR/api_auth.session-journal" ]; then
+if $SUDO test -f "$PROJECT_DIR/api_auth.session-journal" && ! $SUDO test -e "$DATA_DIR/api_auth.session-journal"; then
     $SUDO mv "$PROJECT_DIR/api_auth.session-journal" "$DATA_DIR/api_auth.session-journal"
 fi
-if [ ! -f "$DATA_DIR/config.json" ]; then
+if ! $SUDO test -f "$DATA_DIR/config.json"; then
     download_file "$REPO_URL/config.json" "$TMP_DIR/config.json"
     python3 -c 'import json, pathlib, sys; json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))' "$TMP_DIR/config.json"
     $SUDO install -m 600 "$TMP_DIR/config.json" "$DATA_DIR/config.json"
 fi
 
 # ==========================================
-# 3. 创建虚拟环境并安装依赖
+# 3. 收紧目录与运行数据权限
 # ==========================================
-echo ">> 正在配置 Python 虚拟环境..."
-if [ ! -x "$PROJECT_DIR/venv/bin/python3" ]; then
-    $SUDO python3 -m venv "$PROJECT_DIR/venv"
-fi
-$SUDO "$PROJECT_DIR/venv/bin/pip" install --no-cache-dir --no-compile -r "$PROJECT_DIR/requirements.txt"
 $SUDO chown -R root:root "$PROJECT_DIR"
 $SUDO chmod 755 "$PROJECT_DIR"
 $SUDO chown -R "$SERVICE_USER:$SERVICE_USER" "$DATA_DIR"
@@ -136,7 +208,7 @@ $SUDO find "$DATA_DIR" -type f -exec chmod 600 {} \;
 
 # 4. 配置 systemd 服务
 echo ">> 正在配置后台服务..."
-cat << EOF | $SUDO tee /etc/systemd/system/tg_name.service
+cat > "$TMP_DIR/tg_name.service" << EOF
 [Unit]
 Description=Telegram Name Updater Daemon
 Wants=network-online.target
@@ -174,23 +246,35 @@ ReadWritePaths=$DATA_DIR
 [Install]
 WantedBy=multi-user.target
 EOF
+$SUDO install -m 644 "$TMP_DIR/tg_name.service" /etc/systemd/system/tg_name.service
 
 $SUDO systemctl daemon-reload
 $SUDO systemctl enable tg_name.service
 if $SERVICE_WAS_ACTIVE; then
     $SUDO systemctl restart tg_name.service
+    sleep 2
+    if ! $SUDO systemctl is-active --quiet tg_name.service; then
+        echo ">> 新版本服务未能正常运行，正在恢复安装前版本..." >&2
+        restore_previous_install
+        exit 1
+    fi
 fi
 
 # 5. 创建全局 'tg' 命令别名
 echo ">> 正在配置快捷命令..."
 $SUDO ln -sf "$PROJECT_DIR/venv/bin/python3" /usr/local/bin/tg_py
-cat << 'EOF' | $SUDO tee /usr/local/bin/tg
+cat > "$TMP_DIR/tg" << 'EOF'
 #!/bin/bash
-sudo /usr/local/bin/tg_py /opt/tg_updater/tg_panel.py
+if [ "$(id -u)" -eq 0 ]; then
+    exec /usr/local/bin/tg_py /opt/tg_updater/tg_panel.py
+fi
+exec sudo /usr/local/bin/tg_py /opt/tg_updater/tg_panel.py
 EOF
-$SUDO chmod +x /usr/local/bin/tg
+$SUDO install -m 755 "$TMP_DIR/tg" /usr/local/bin/tg
 
 echo "=================================="
 echo "✅ 安装完成！"
 echo "👉 请在终端输入 'tg' 打开控制面板，并使用选项 [1] 初始化账号。"
 echo "=================================="
+ROLLBACK_NEEDED=false
+trap - ERR

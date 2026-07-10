@@ -19,7 +19,7 @@ from datetime import date
 # 【版本定义】
 # 每次修改代码推送到 GitHub 前，请手动提升此版本号
 # ==========================================
-CURRENT_VERSION = "v1.7.1"
+CURRENT_VERSION = "v1.8.1"
 AUTHOR = "oKafuChino"
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -38,13 +38,14 @@ LEGACY_SESSION_JOURNAL_FILE = os.path.join(BASE_DIR, 'api_auth.session-journal')
 LEGACY_API_CONFIG_FILE = os.path.join(BASE_DIR, 'api_auth.json')
 REPO_URL = "https://raw.githubusercontent.com/oKafuChino/TelegramNameUpdate/main"
 SERVICE_USER = "tg_updater"
-DEFAULT_NAME_ORDER = ["time", "timezone", "date", "temp", "weather"]
+DEFAULT_NAME_ORDER = ["time", "timezone", "date", "temp", "weather", "emoji"]
 ORDER_LABELS = {
     "time": "时间",
     "timezone": "时区",
     "date": "日期",
     "temp": "温度",
     "weather": "天气",
+    "emoji": "Emoji",
 }
 DEFAULT_CONFIG = {"show_time": True, "show_timezone": True, "show_date": False, "show_temp": True, "show_weather": True, "location": "Los Angeles", "digit_style": "sans_bold", "name_order": DEFAULT_NAME_ORDER.copy(), "bio_enabled": False, "birth_date": "", "fixed_bio": "", "update_interval": 1, "emoji_schedules": []}
 BOOL_CONFIG_KEYS = ("show_time", "show_timezone", "show_date", "show_temp", "show_weather", "bio_enabled")
@@ -246,7 +247,10 @@ def sanitize_config(raw_config):
 
     location = raw_config.get("location")
     if isinstance(location, str) and location.strip():
-        config["location"] = location.strip()[:MAX_LOCATION_LENGTH]
+        printable_location = "".join(char for char in location.strip() if char.isprintable())
+        cleaned_location = " ".join(printable_location.split())
+        if cleaned_location:
+            config["location"] = cleaned_location[:MAX_LOCATION_LENGTH]
 
     config["name_order"] = normalize_name_order(raw_config.get("name_order"))
     birth_date = parse_birth_date(raw_config.get("birth_date"))
@@ -319,6 +323,8 @@ def render_menu(config):
     menu_line("15", "重启后台服务", "立即重载配置", "green")
     menu_line("16", "检查并更新", "从 GitHub 拉取核心脚本", "green")
     menu_line("17", "同步服务器时区", "改名显示将使用 UTC 偏移", "green")
+    menu_line("18", "强制更新 Last Name", "立即按当前配置更新一次", "green")
+    menu_line("19", "强制更新 Bio", "立即按当前配置更新一次", "green")
 
     print()
     menu_line("99", "一键卸载脚本", "停止服务并删除程序与配置", "red")
@@ -326,11 +332,67 @@ def render_menu(config):
     print(color("─"*56, "cyan"))
 
 def run_command(command, **kwargs):
+    if command and command[0] == "sudo" and hasattr(os, "geteuid") and os.geteuid() == 0:
+        command = command[1:]
     try:
         return subprocess.run(command, check=False, **kwargs).returncode
     except FileNotFoundError:
         print(f"命令不存在: {command[0]}")
         return 127
+
+def trigger_service_update(signal_name, label):
+    if run_command(["sudo", "systemctl", "is-active", "--quiet", "tg_name.service"]) != 0:
+        input(f"❌ 后台服务未运行，无法更新 {label}。按回车键返回主菜单...")
+        return
+
+    result = run_command([
+        "sudo", "systemctl", "kill", "--kill-who=main",
+        f"--signal={signal_name}", "tg_name.service",
+    ])
+    if result == 0:
+        input(f"✅ 已发送 {label} 强制更新指令，可使用 [2] 查看执行结果。按回车键返回主菜单...")
+    else:
+        input(f"❌ {label} 强制更新指令发送失败，请使用 [2] 查看日志。按回车键返回主菜单...")
+
+def backup_session_files():
+    suffix = f".login.bak.{os.getpid()}.{secrets.token_hex(4)}"
+    backups = []
+    try:
+        for path in (SESSION_FILE, SESSION_JOURNAL_FILE):
+            if os.path.lexists(path):
+                backup_path = path + suffix
+                os.replace(path, backup_path)
+                backups.append((path, backup_path))
+    except OSError:
+        restore_session_files(backups)
+        raise
+    return backups
+
+def restore_session_files(backups):
+    restored = True
+    for path in (SESSION_FILE, SESSION_JOURNAL_FILE):
+        try:
+            if os.path.lexists(path):
+                os.unlink(path)
+        except OSError:
+            restored = False
+    for original_path, backup_path in backups:
+        try:
+            os.replace(backup_path, original_path)
+        except OSError:
+            restored = False
+    return restored
+
+def remove_session_backups(backups):
+    removed = True
+    for _, backup_path in backups:
+        try:
+            os.unlink(backup_path)
+        except FileNotFoundError:
+            pass
+        except OSError:
+            removed = False
+    return removed
 
 def chown_runtime_files():
     if run_command(["id", "-u", SERVICE_USER], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL) != 0:
@@ -366,14 +428,17 @@ def migrate_legacy_runtime_files():
 
 def harden_code_files():
     if BASE_DIR != "/opt/tg_updater":
-        return
+        return True
 
-    run_command(["sudo", "chown", "-R", "root:root", BASE_DIR])
-    run_command(["sudo", "chmod", "755", BASE_DIR])
-    for filename in ("tg_panel.py", "tg_daemon.py"):
+    success = run_command(["sudo", "chown", "root:root", BASE_DIR]) == 0
+    success = run_command(["sudo", "chmod", "755", BASE_DIR]) == 0 and success
+    for filename in ("tg_panel.py", "tg_daemon.py", "requirements.txt"):
         path = os.path.join(BASE_DIR, filename)
-        if os.path.exists(path):
-            run_command(["sudo", "chmod", "755", path])
+        if os.path.isfile(path) and not os.path.islink(path):
+            mode = "755" if filename.endswith(".py") else "644"
+            success = run_command(["sudo", "chown", "root:root", path]) == 0 and success
+            success = run_command(["sudo", "chmod", mode, path]) == 0 and success
+    return success
 
 def remote_file_url(filename):
     return f"{REPO_URL}/{filename}?t={int(time.time())}"
@@ -400,7 +465,7 @@ def get_remote_version():
 def parse_version(version):
     if not isinstance(version, str):
         return None
-    match = re.fullmatch(r"v?(\d+(?:\.\d+)*)", version.strip())
+    match = re.fullmatch(r"v?(\d{1,6}(?:\.\d{1,6}){0,3})", version.strip())
     if not match:
         return None
     return tuple(int(number) for number in match.group(1).split("."))
@@ -464,6 +529,8 @@ def write_json_atomic(path, data):
         with os.fdopen(fd, 'w', encoding='utf-8') as f:
             json.dump(data, f, indent=4, ensure_ascii=False)
         os.chmod(tmp_path, 0o600)
+        if IS_INSTALLED and run_command(["chown", f"{SERVICE_USER}:{SERVICE_USER}", tmp_path]) != 0:
+            raise OSError("无法设置配置文件所有者")
         os.replace(tmp_path, path)
     except Exception:
         try:
@@ -473,13 +540,21 @@ def write_json_atomic(path, data):
         raise
 
 def save_config(config):
-    write_json_atomic(CONFIG_FILE, config)
-    chown_runtime_files()
+    try:
+        write_json_atomic(CONFIG_FILE, config)
+    except OSError as e:
+        print(f"\n❌ 配置保存失败: {e}")
+        return False
     restart_code = run_command(["sudo", "systemctl", "restart", "tg_name.service"])
     if restart_code == 0:
         print("\n✅ 配置已保存，后台服务已自动重启！")
     else:
         print("\n⚠️ 配置已保存，但后台服务重启失败，请使用 [2] 查看日志。")
+    return True
+
+def save_config_and_pause(config):
+    save_config(config)
+    input("按回车键返回主菜单...")
 
 def clear_screen():
     run_command(["clear"])
@@ -545,6 +620,17 @@ def validate_python_file(path, required_symbols=()):
             symbols.update(target.id for target in targets if isinstance(target, ast.Name))
     return all(symbol in symbols for symbol in required_symbols)
 
+def validate_requirements_file(path):
+    try:
+        if os.path.getsize(path) > 64 * 1024:
+            return False
+        with open(path, 'r', encoding='ascii') as f:
+            lines = [line.strip() for line in f if line.strip() and not line.lstrip().startswith('#')]
+    except (OSError, UnicodeDecodeError):
+        return False
+
+    return bool(lines) and all(re.fullmatch(r"[A-Za-z0-9_.-]+==[A-Za-z0-9_.+-]+", line) for line in lines)
+
 def replace_remote_file(tmp_target, target):
     return run_command(["sudo", "mv", tmp_target, target])
 
@@ -556,19 +642,26 @@ def replace_remote_files(file_pairs):
         backup_path = f"{target_path}{backup_suffix}"
         if run_command(["sudo", "cp", "-p", target_path, backup_path]) != 0:
             cleanup_temp_files(*(backup for _, backup in backups))
-            return False
+            return None
         backups.append((target_path, backup_path))
 
     for tmp_path, target_path in file_pairs:
         if replace_remote_file(tmp_path, target_path) != 0:
-            for restored_target, backup_path in replaced:
-                run_command(["sudo", "cp", "-p", backup_path, restored_target])
-            cleanup_temp_files(*(backup for _, backup in backups), *(tmp for tmp, _ in file_pairs))
-            return False
+            restored = restore_remote_files(replaced)
+            if restored:
+                cleanup_temp_files(*(backup for _, backup in backups))
+            cleanup_temp_files(*(tmp for tmp, _ in file_pairs))
+            return None
         replaced.append((target_path, dict(backups)[target_path]))
 
-    cleanup_temp_files(*(backup for _, backup in backups))
-    return True
+    return backups
+
+def restore_remote_files(backups):
+    restored = True
+    for target_path, backup_path in backups:
+        if run_command(["sudo", "cp", "-p", backup_path, target_path]) != 0:
+            restored = False
+    return restored
 
 def cleanup_temp_files(*paths):
     existing_paths = [path for path in paths if path and os.path.exists(path)]
@@ -624,6 +717,12 @@ def uninstall_script():
         failures.append("运行数据目录删除失败")
     if run_command(["sudo", "rm", "-rf", project_dir]) != 0:
         failures.append("程序目录删除失败")
+    if run_command(["id", "-u", SERVICE_USER], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL) == 0:
+        if run_command(["sudo", "userdel", SERVICE_USER]) != 0:
+            failures.append("专用系统账号删除失败")
+    if run_command(["getent", "group", SERVICE_USER], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL) == 0:
+        if run_command(["sudo", "groupdel", SERVICE_USER]) != 0:
+            failures.append("专用系统用户组删除失败")
 
     remaining_paths = [
         path for path in (
@@ -654,7 +753,7 @@ def configure_name_order(config):
     print("\n可选字段:")
     for index, key in enumerate(item_keys, 1):
         print(f"  {index}. {ORDER_LABELS[key]}")
-    print("\n请输入新的顺序，例如 1,2,3,4,5 或 3,1,2,4,5")
+    print("\n请输入新的顺序，例如 1,2,3,4,5,6 或 6,1,2,3,4,5")
     raw_order = input("新顺序 (直接回车取消): ").strip()
     if not raw_order:
         return
@@ -680,14 +779,18 @@ def configure_name_order(config):
         return
 
     config["name_order"] = normalize_name_order(selected)
-    save_config(config)
-    input(f"✅ 输出顺序已更新为: {format_name_order(config['name_order'])}，按回车键返回主菜单...")
+    if save_config(config):
+        input(f"✅ 输出顺序已更新为: {format_name_order(config['name_order'])}，按回车键返回主菜单...")
+    else:
+        input("按回车键返回主菜单...")
 
 def configure_bio(config):
     if config.get("bio_enabled"):
         config["bio_enabled"] = False
-        save_config(config)
-        input("✅ Bio 自动更新已关闭，按回车键返回主菜单...")
+        if save_config(config):
+            input("✅ Bio 自动更新已关闭，按回车键返回主菜单...")
+        else:
+            input("按回车键返回主菜单...")
         return
 
     print("\n开启后，每天 03:00 自动更新 Bio。")
@@ -718,13 +821,31 @@ def configure_bio(config):
         "birth_date": birth_date.isoformat(),
         "fixed_bio": fixed_bio,
     })
+    bio_state_backup = None
     try:
-        os.unlink(BIO_STATE_FILE)
+        if os.path.lexists(BIO_STATE_FILE):
+            bio_state_backup = f"{BIO_STATE_FILE}.bak.{os.getpid()}.{secrets.token_hex(4)}"
+            os.replace(BIO_STATE_FILE, bio_state_backup)
     except FileNotFoundError:
         pass
-    save_config(config)
-    print(f"\nBio 预览: {preview}")
-    input("✅ Bio 自动更新已开启，按回车键返回主菜单...")
+    except OSError as e:
+        input(f"❌ Bio 状态准备失败: {e}。按回车键返回主菜单...")
+        return
+    if save_config(config):
+        if bio_state_backup:
+            try:
+                os.unlink(bio_state_backup)
+            except OSError:
+                print("⚠️ 旧 Bio 状态备份清理失败，不影响新配置运行。")
+        print(f"\nBio 预览: {preview}")
+        input("✅ Bio 自动更新已开启，按回车键返回主菜单...")
+    else:
+        if bio_state_backup:
+            try:
+                os.replace(bio_state_backup, BIO_STATE_FILE)
+            except OSError:
+                print("⚠️ 配置保存和 Bio 状态恢复均失败，请检查数据目录权限。")
+        input("按回车键返回主菜单...")
 
 def configure_update_interval(config):
     print(f"\n当前 Last Name 更新频率: 每 {config['update_interval']} 分钟")
@@ -746,8 +867,10 @@ def configure_update_interval(config):
         return
 
     config["update_interval"] = UPDATE_INTERVALS[int(choice) - 1]
-    save_config(config)
-    input(f"✅ Last Name 更新频率已设置为每 {config['update_interval']} 分钟，按回车键返回主菜单...")
+    if save_config(config):
+        input(f"✅ Last Name 更新频率已设置为每 {config['update_interval']} 分钟，按回车键返回主菜单...")
+    else:
+        input("按回车键返回主菜单...")
 
 def configure_digit_style(config):
     style_keys = list(DIGIT_STYLES)
@@ -770,8 +893,10 @@ def configure_digit_style(config):
         return
 
     config["digit_style"] = style_keys[int(choice) - 1]
-    save_config(config)
-    input(f"✅ 数字字体已切换为 {DIGIT_STYLES[config['digit_style']]}，按回车键返回主菜单...")
+    if save_config(config):
+        input(f"✅ 数字字体已切换为 {DIGIT_STYLES[config['digit_style']]}，按回车键返回主菜单...")
+    else:
+        input("按回车键返回主菜单...")
 
 def print_emoji_schedules(schedules):
     if not schedules:
@@ -815,8 +940,11 @@ def configure_emoji_schedules(config):
                 input(f"❌ 所有规则同时命中时最多允许 {MAX_ACTIVE_EMOJI_LENGTH} 个字符，请减少 Emoji。按回车键继续...")
                 continue
             config["emoji_schedules"].append(candidate)
-            save_config(config)
-            input("✅ Emoji 规则已添加，按回车键继续...")
+            if save_config(config):
+                input("✅ Emoji 规则已添加，按回车键继续...")
+            else:
+                config["emoji_schedules"].pop()
+                input("按回车键继续...")
             continue
 
         if choice == "2":
@@ -830,15 +958,22 @@ def configure_emoji_schedules(config):
                 input("❌ 规则编号无效，按回车键继续...")
                 continue
             removed = config["emoji_schedules"].pop(int(raw_index) - 1)
-            save_config(config)
-            input(f"✅ 已删除 {removed['start']}-{removed['end']} {removed['emoji']}，按回车键继续...")
+            if save_config(config):
+                input(f"✅ 已删除 {removed['start']}-{removed['end']} {removed['emoji']}，按回车键继续...")
+            else:
+                config["emoji_schedules"].insert(int(raw_index) - 1, removed)
+                input("按回车键继续...")
             continue
 
         if choice == "3":
             if input("输入 DELETE 确认清空全部规则: ").strip() == "DELETE":
+                previous_schedules = config["emoji_schedules"]
                 config["emoji_schedules"] = []
-                save_config(config)
-                input("✅ Emoji 规则已清空，按回车键继续...")
+                if save_config(config):
+                    input("✅ Emoji 规则已清空，按回车键继续...")
+                else:
+                    config["emoji_schedules"] = previous_schedules
+                    input("按回车键继续...")
             continue
 
         input("❌ 选项无效，按回车键继续...")
@@ -850,7 +985,7 @@ def main_menu():
         config = load_config()
         render_menu(config)
         
-        choice = input(color("请输入选项 (0-17, 99): ", "cyan", "bold")).strip()
+        choice = input(color("请输入选项 (0-19, 99): ", "cyan", "bold")).strip()
         
         if choice == '0':
             print("退出面板。")
@@ -861,26 +996,57 @@ def main_menu():
             
         elif choice == '1':
             harden_code_files()
+            service_was_active = run_command(["sudo", "systemctl", "is-active", "--quiet", "tg_name.service"]) == 0
             print("正在停止后台服务...")
             run_command(["sudo", "systemctl", "stop", "tg_name.service"])
-            for path in (SESSION_FILE, SESSION_JOURNAL_FILE):
-                if os.path.exists(path):
-                    os.remove(path)
-            print("旧凭证已删除，请按提示重新登录：")
-            venv_python = os.path.join(os.path.dirname(__file__), 'venv', 'bin', 'python3')
-            if not os.path.exists(venv_python):
-                venv_python = sys.executable
-            login_result = run_command([venv_python, os.path.join(os.path.dirname(__file__), 'tg_daemon.py'), '--login'])
-            if login_result == 0:
+            if run_command(["sudo", "systemctl", "is-active", "--quiet", "tg_name.service"]) == 0:
+                input("❌ 后台服务未能停止，为避免 Session 冲突，已取消登录。按回车键返回主菜单...")
+                continue
+            try:
+                session_backups = backup_session_files()
+            except OSError as e:
+                if service_was_active:
+                    run_command(["sudo", "systemctl", "restart", "tg_name.service"])
+                input(f"❌ 旧凭证备份失败: {e}。按回车键返回主菜单...")
+                continue
+
+            try:
+                print("旧凭证已临时备份，请按提示重新登录：")
+                venv_python = os.path.join(os.path.dirname(__file__), 'venv', 'bin', 'python3')
+                if not os.path.exists(venv_python):
+                    venv_python = sys.executable
+                daemon_path = os.path.join(os.path.dirname(__file__), 'tg_daemon.py')
                 chown_runtime_files()
-                print("\n正在重启后台服务...")
-                restart_code = run_command(["sudo", "systemctl", "restart", "tg_name.service"])
-                if restart_code == 0:
-                    input("✅ 配置已生效，按回车键返回主菜单...")
+                login_command = [venv_python, daemon_path, '--login']
+                if IS_INSTALLED and run_command(["id", "-u", SERVICE_USER], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL) == 0:
+                    login_command = ["sudo", "-u", SERVICE_USER, *login_command]
+                login_result = run_command(login_command)
+                if login_result == 0:
+                    backups_removed = remove_session_backups(session_backups)
+                    chown_runtime_files()
+                    print("\n正在重启后台服务...")
+                    restart_code = run_command(["sudo", "systemctl", "restart", "tg_name.service"])
+                    if restart_code == 0:
+                        message = "✅ 配置已生效"
+                        if not backups_removed:
+                            message += "，但旧 Session 备份清理失败"
+                        input(f"{message}。按回车键返回主菜单...")
+                    else:
+                        input("⚠️ 登录成功，但后台服务重启失败，请使用 [2] 查看日志。按回车键返回主菜单...")
                 else:
-                    input("⚠️ 登录成功，但后台服务重启失败，请使用 [2] 查看日志。按回车键返回主菜单...")
-            else:
-                input("❌ 登录失败，后台服务未重启。按回车键返回主菜单...")
+                    restored = restore_session_files(session_backups)
+                    chown_runtime_files()
+                    service_restored = not service_was_active or run_command(["sudo", "systemctl", "restart", "tg_name.service"]) == 0
+                    if restored and service_restored:
+                        input("❌ 登录失败，已恢复旧 Session 和原服务状态。按回车键返回主菜单...")
+                    else:
+                        input("❌ 登录失败，旧 Session 或服务状态未能完整恢复，请检查 [2] 日志。按回车键返回主菜单...")
+            except (OSError, KeyboardInterrupt) as e:
+                restored = restore_session_files(session_backups)
+                chown_runtime_files()
+                if service_was_active:
+                    run_command(["sudo", "systemctl", "restart", "tg_name.service"])
+                input(f"❌ 登录过程已中断，旧 Session {'已恢复' if restored else '恢复失败'}: {e}。按回车键返回主菜单...")
             
         elif choice == '2':
             print("\n--- 最近 50 条系统运行日志 ---\n")
@@ -890,23 +1056,23 @@ def main_menu():
             
         elif choice == '3':
             config['show_time'] = not config['show_time']
-            save_config(config)
+            save_config_and_pause(config)
             
         elif choice == '4':
             config['show_timezone'] = not config['show_timezone']
-            save_config(config)
+            save_config_and_pause(config)
             
         elif choice == '5':
             config['show_date'] = not config['show_date']
-            save_config(config)
+            save_config_and_pause(config)
             
         elif choice == '6':
             config['show_temp'] = not config['show_temp']
-            save_config(config)
+            save_config_and_pause(config)
             
         elif choice == '7':
             config['show_weather'] = not config['show_weather']
-            save_config(config)
+            save_config_and_pause(config)
             
         elif choice == '8':
             configure_digit_style(config)
@@ -918,14 +1084,14 @@ def main_menu():
                     input(f"❌ 地区名称过长，请限制在 {MAX_LOCATION_LENGTH} 个字符内。按回车键返回主菜单...")
                     continue
                 config['location'] = new_loc
-                save_config(config)
+                save_config_and_pause(config)
                 
         elif choice == '10':
             configure_name_order(config)
                 
         elif choice == '11':
             config.update({"show_time": True, "show_timezone": True, "show_date": True, "show_temp": True, "show_weather": True})
-            save_config(config)
+            save_config_and_pause(config)
             
         elif choice == '12':
             configure_bio(config)
@@ -965,27 +1131,30 @@ def main_menu():
                 print(">> 无法获取远程版本号，仍尝试拉取最新代码...")
             daemon_target = "/opt/tg_updater/tg_daemon.py"
             panel_target = "/opt/tg_updater/tg_panel.py"
+            requirements_target = "/opt/tg_updater/requirements.txt"
             res1, daemon_tmp = download_remote_file("tg_daemon.py", daemon_target)
             res2, panel_tmp = download_remote_file("tg_panel.py", panel_target)
+            res3, requirements_tmp = download_remote_file("requirements.txt", requirements_target)
             
-            if res1 == 0 and res2 == 0:
+            if res1 == 0 and res2 == 0 and res3 == 0:
                 daemon_valid = validate_python_file(daemon_tmp, ("main", "change_name_auto"))
                 panel_valid = validate_python_file(panel_tmp, ("CURRENT_VERSION", "main_menu"))
-                if not daemon_valid or not panel_valid:
-                    cleanup_temp_files(daemon_tmp, panel_tmp)
-                    print("\n❌ 更新失败！下载文件未通过 Python 语法校验，已取消覆盖。")
+                requirements_valid = validate_requirements_file(requirements_tmp)
+                if not daemon_valid or not panel_valid or not requirements_valid:
+                    cleanup_temp_files(daemon_tmp, panel_tmp, requirements_tmp)
+                    print("\n❌ 更新失败！下载文件未通过语法或依赖格式校验，已取消覆盖。")
                     input("按回车键返回主菜单...")
                     continue
 
                 downloaded_version = extract_version_from_file(panel_tmp)
                 if downloaded_version is None or parse_version(downloaded_version) is None:
-                    cleanup_temp_files(daemon_tmp, panel_tmp)
+                    cleanup_temp_files(daemon_tmp, panel_tmp, requirements_tmp)
                     print("\n❌ 更新失败！下载到的面板脚本版本号缺失或格式无效，已取消覆盖。")
                     input("按回车键返回主菜单...")
                     continue
                 downloaded_compare = compare_versions(downloaded_version, CURRENT_VERSION)
                 if downloaded_compare is not None and downloaded_compare < 0:
-                    cleanup_temp_files(daemon_tmp, panel_tmp)
+                    cleanup_temp_files(daemon_tmp, panel_tmp, requirements_tmp)
                     print(f"\n❌ 已取消更新：下载到的版本是 {downloaded_version}，低于当前版本 {CURRENT_VERSION}。")
                     print("请确认 GitHub main 分支已经推送最新代码，或等待 raw.githubusercontent.com 缓存刷新。")
                     input("按回车键返回主菜单...")
@@ -995,24 +1164,53 @@ def main_menu():
                 elif downloaded_version:
                     print(f">> 下载文件版本确认: {downloaded_version}")
 
-                if replace_remote_files(((daemon_tmp, daemon_target), (panel_tmp, panel_target))):
-                    run_command(["sudo", "chmod", "+x", panel_target])
-                    run_command(["sudo", "chmod", "+x", daemon_target])
-                    run_command(["sudo", "chown", "root:root", daemon_target])
-                    run_command(["sudo", "chown", "root:root", panel_target])
-                    harden_code_files()
-                    print(">> 正在重启后台服务...")
-                    restart_code = run_command(["sudo", "systemctl", "restart", "tg_name.service"])
-                    if restart_code == 0:
-                        print("\n✅ 更新成功！核心代码与后台服务均已同步至 GitHub 最新版本。")
+                service_was_active = run_command(["sudo", "systemctl", "is-active", "--quiet", "tg_name.service"]) == 0
+                try:
+                    with open(requirements_target, 'rb') as current_file, open(requirements_tmp, 'rb') as new_file:
+                        requirements_changed = current_file.read() != new_file.read()
+                except OSError:
+                    requirements_changed = True
+                backups = replace_remote_files((
+                    (daemon_tmp, daemon_target),
+                    (panel_tmp, panel_target),
+                    (requirements_tmp, requirements_target),
+                ))
+                if backups is not None:
+                    update_ok = harden_code_files()
+                    if update_ok and service_was_active:
+                        print(">> 正在重启后台服务并检查运行状态...")
+                        update_ok = run_command(["sudo", "systemctl", "restart", "tg_name.service"]) == 0
+                        if update_ok:
+                            time.sleep(2)
+                            update_ok = run_command(["sudo", "systemctl", "is-active", "--quiet", "tg_name.service"]) == 0
+
+                    if update_ok:
+                        cleanup_temp_files(*(backup for _, backup in backups))
+                        if service_was_active:
+                            print("\n✅ 更新成功！核心代码与后台服务均已同步至 GitHub 最新版本。")
+                        else:
+                            print("\n✅ 更新成功！后台服务原本未运行，因此保持停止状态。")
                     else:
-                        print("\n⚠️ 核心代码更新成功，但后台服务重启失败，请使用 [2] 查看日志。")
-                    print("⚠️ 提示：由于当前管理面板已载入内存，建议您输入 [0] 退出面板并重新敲击 'tg' 载入新版本界面。")
+                        print("\n⚠️ 新版本未能正常运行，正在恢复更新前文件...")
+                        restored = restore_remote_files(backups)
+                        if restored:
+                            harden_code_files()
+                            cleanup_temp_files(*(backup for _, backup in backups))
+                            rollback_started = not service_was_active or run_command(["sudo", "systemctl", "restart", "tg_name.service"]) == 0
+                            if rollback_started:
+                                print("❌ 更新失败，已自动恢复旧版本。")
+                            else:
+                                print("❌ 已恢复旧文件，但后台服务重启失败，请使用 [2] 查看日志。")
+                        else:
+                            print("❌ 更新和自动恢复均失败，备份文件已保留在 /opt/tg_updater，请勿继续更新并检查磁盘与权限。")
+                    print("⚠️ 提示：当前面板仍是内存中的旧界面，请输入 [0] 退出后重新运行 'tg'。")
+                    if update_ok and requirements_changed:
+                        print("⚠️ 依赖文件已变化，请重新执行 README 中的安装命令以同步虚拟环境。")
                 else:
-                    cleanup_temp_files(daemon_tmp, panel_tmp)
+                    cleanup_temp_files(daemon_tmp, panel_tmp, requirements_tmp)
                     print("\n❌ 更新失败！文件替换失败，已尝试恢复旧版本，请检查 /opt/tg_updater 权限。")
             else:
-                cleanup_temp_files(daemon_tmp, panel_tmp)
+                cleanup_temp_files(daemon_tmp, panel_tmp, requirements_tmp)
                 print("\n❌ 更新失败！请检查 VPS 网络连接或 GitHub 仓库地址是否正确。")
             input("按回车键返回主菜单...")
             
@@ -1062,5 +1260,17 @@ def main_menu():
                 if run_command(["sudo", "systemctl", "restart", "tg_name.service"]) != 0:
                     print("⚠️ 时区已设置，但后台服务重启失败，请使用 [2] 查看日志。")
             input("按回车键返回主菜单...")
+
+        elif choice == '18':
+            trigger_service_update("SIGUSR1", "Last Name")
+
+        elif choice == '19':
+            if not config.get("bio_enabled"):
+                input("❌ Bio 自动更新尚未开启，请先使用 [12] 完成配置。按回车键返回主菜单...")
+                continue
+            trigger_service_update("SIGUSR2", "Bio")
+
+        else:
+            input("❌ 选项无效，按回车键返回主菜单...")
 if __name__ == "__main__":
     main_menu()

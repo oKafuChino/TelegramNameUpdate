@@ -13,6 +13,7 @@ import calendar
 import tempfile
 import re
 import getpass
+import signal
 from datetime import date
 from telethon import TelegramClient
 from telethon.errors import FloodWaitError
@@ -42,13 +43,14 @@ DIGIT_STYLE_MAPS = {
     "double_struck": str.maketrans("0123456789", "𝟘𝟙𝟚𝟛𝟜𝟝𝟞𝟟𝟠𝟡"),
 }
 current_weather_data = {"temp": "", "emoji": ""}
-DEFAULT_NAME_ORDER = ["time", "timezone", "date", "temp", "weather"]
+DEFAULT_NAME_ORDER = ["time", "timezone", "date", "temp", "weather", "emoji"]
 ORDER_LABELS = {
     "time": "时间",
     "timezone": "时区",
     "date": "日期",
     "temp": "温度",
     "weather": "天气",
+    "emoji": "Emoji",
 }
 DEFAULT_CONFIG = {"show_time": True, "show_timezone": True, "show_date": False, "show_temp": True, "show_weather": True, "location": "Los Angeles", "digit_style": "sans_bold", "name_order": DEFAULT_NAME_ORDER.copy(), "bio_enabled": False, "birth_date": "", "fixed_bio": "", "update_interval": 1, "emoji_schedules": []}
 BOOL_CONFIG_KEYS = ("show_time", "show_timezone", "show_date", "show_temp", "show_weather", "bio_enabled")
@@ -211,7 +213,10 @@ def sanitize_config(raw_config):
 
     location = raw_config.get("location")
     if isinstance(location, str) and location.strip():
-        config["location"] = location.strip()[:MAX_LOCATION_LENGTH]
+        printable_location = "".join(char for char in location.strip() if char.isprintable())
+        cleaned_location = " ".join(printable_location.split())
+        if cleaned_location:
+            config["location"] = cleaned_location[:MAX_LOCATION_LENGTH]
 
     config["name_order"] = normalize_name_order(raw_config.get("name_order"))
     birth_date = parse_birth_date(raw_config.get("birth_date"))
@@ -280,19 +285,34 @@ def get_utc_offset_text(local_time):
         return f"UTC{sign}{hours}:{minutes:02d}"
     return f"UTC{sign}{hours}"
 
+def normalize_api_hash(value):
+    if not isinstance(value, str):
+        return None
+    value = value.strip()
+    return value.lower() if re.fullmatch(r"[0-9a-fA-F]{32}", value) else None
+
+def normalize_api_id(value):
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        api_id = value
+    elif isinstance(value, str) and value.strip().isdigit():
+        api_id = int(value.strip())
+    else:
+        return None
+    return api_id if 0 < api_id <= 2_147_483_647 else None
+
 def load_api_credentials(allow_prompt=False):
     env_api_id = os.environ.get("TELEGRAM_API_ID")
     env_api_hash = os.environ.get("TELEGRAM_API_HASH")
     if env_api_id is not None or env_api_hash is not None:
         if not env_api_id or not env_api_hash:
             raise RuntimeError("TELEGRAM_API_ID 和 TELEGRAM_API_HASH 必须同时设置。")
-        try:
-            api_id = int(env_api_id)
-        except ValueError as exc:
-            raise RuntimeError("环境变量 TELEGRAM_API_ID 必须是数字。") from exc
-        if api_id <= 0 or not env_api_hash.strip():
-            raise RuntimeError("环境变量 TELEGRAM_API_ID 必须为正整数，TELEGRAM_API_HASH 不能为空。")
-        return api_id, env_api_hash.strip()
+        api_id = normalize_api_id(env_api_id)
+        api_hash = normalize_api_hash(env_api_hash)
+        if api_id is None or api_hash is None:
+            raise RuntimeError("TELEGRAM_API_ID 必须为正整数，TELEGRAM_API_HASH 必须是 32 位十六进制字符串。")
+        return api_id, api_hash
 
     try:
         with open(API_CONFIG_FILE, 'r', encoding='utf-8') as f:
@@ -300,11 +320,11 @@ def load_api_credentials(allow_prompt=False):
         if len(content) > MAX_API_CONFIG_FILE_SIZE:
             raise ValueError
         data = json.loads(content)
-        api_id = int(data["api_id"])
-        api_hash = data["api_hash"]
-        if api_id <= 0 or not isinstance(api_hash, str) or not api_hash.strip():
+        api_id = normalize_api_id(data["api_id"])
+        api_hash = normalize_api_hash(data["api_hash"])
+        if api_id is None or api_hash is None:
             raise ValueError
-        return api_id, api_hash.strip()
+        return api_id, api_hash
     except (OSError, TypeError, ValueError, KeyError, json.JSONDecodeError):
         pass
 
@@ -312,10 +332,10 @@ def load_api_credentials(allow_prompt=False):
         raise RuntimeError("缺少 Telegram API 凭证，请先运行 `tg` 并使用选项 [1] 初始化账号。")
 
     raw_api_id = input('请输入 api_id: ').strip()
-    api_hash = getpass.getpass('请输入 api_hash: ').strip()
-    if not raw_api_id.isdigit() or int(raw_api_id) <= 0 or not api_hash:
-        raise RuntimeError("api_id 必须是正整数，api_hash 不能为空。")
-    api_id = int(raw_api_id)
+    api_hash = normalize_api_hash(getpass.getpass('请输入 api_hash: '))
+    api_id = normalize_api_id(raw_api_id)
+    if api_id is None or api_hash is None:
+        raise RuntimeError("api_id 必须是正整数，api_hash 必须是 32 位十六进制字符串。")
     os.makedirs(DATA_DIR, exist_ok=True)
     save_text_atomic(
         API_CONFIG_FILE,
@@ -325,7 +345,7 @@ def load_api_credentials(allow_prompt=False):
     return api_id, api_hash
 
 def harden_runtime_files():
-    for path in (API_CONFIG_FILE, api_auth_file + '.session', api_auth_file + '.session-journal', BIO_STATE_FILE, EMOJI_STATE_FILE):
+    for path in (CONFIG_FILE, API_CONFIG_FILE, api_auth_file + '.session', api_auth_file + '.session-journal', BIO_STATE_FILE, EMOJI_STATE_FILE):
         try:
             if os.path.exists(path) and not os.path.islink(path):
                 os.chmod(path, 0o600)
@@ -366,14 +386,22 @@ def fetch_weather_sync(city_name):
         logger.warning("Weather update failed for %s", city_name, exc_info=True)
         return {"temp": "", "emoji": ""}
 
-async def update_weather_loop(loop):
+async def refresh_weather(loop):
     global current_weather_data
+    config = load_config()
+    if not (config['show_temp'] or config['show_weather']):
+        current_weather_data = {"temp": "", "emoji": ""}
+        return True
+
+    result = await loop.run_in_executor(None, fetch_weather_sync, config['location'])
+    current_weather_data = result
+    return bool(result['temp'])
+
+async def update_weather_loop(loop):
     while True:
-        config = load_config()
-        if config['show_temp'] or config['show_weather']:
-            result = await loop.run_in_executor(None, fetch_weather_sync, config['location'])
-            if result['temp']: current_weather_data = result
-        await asyncio.sleep(3600)
+        success = await refresh_weather(loop)
+        delay = 3600 if success else 300
+        await asyncio.sleep(delay)
 
 # ==========================================
 # 【核心拼接模块】
@@ -385,24 +413,34 @@ def get_active_emoji(schedules, local_time):
     minute_of_day = local_time.tm_hour * 60 + local_time.tm_min
     return [rule["emoji"] for rule in schedules if is_rule_active(rule, minute_of_day)]
 
-def compose_last_name(parts, active_emojis):
-    base_name = " ".join(parts)
-    if not active_emojis:
-        return base_name
-    available = MAX_LAST_NAME_LENGTH - len(base_name) - (1 if base_name else 0)
-    if available <= 0:
-        return base_name[:MAX_LAST_NAME_LENGTH]
+def compose_last_name(parts):
     selected = []
     used = 0
-    for emoji in active_emojis:
-        if used + len(emoji) > available:
+    for part in parts:
+        extra = len(part) + (1 if selected else 0)
+        if used + extra > MAX_LAST_NAME_LENGTH:
             continue
-        selected.append(emoji)
-        used += len(emoji)
-    emoji_text = "".join(selected)
-    if not emoji_text:
-        return base_name[:MAX_LAST_NAME_LENGTH]
-    return f"{base_name} {emoji_text}" if base_name else emoji_text
+        selected.append(part)
+        used += extra
+    return " ".join(selected)
+
+def build_dynamic_last_name(config, local_time):
+    active_emojis = get_active_emoji(config['emoji_schedules'], local_time)
+    values = {
+        "time": time.strftime("%H:%M", local_time) if config['show_time'] else "",
+        "timezone": get_utc_offset_text(local_time) if config['show_timezone'] else "",
+        "date": time.strftime("%m-%d", local_time) if config['show_date'] else "",
+        "temp": current_weather_data['temp'] if config['show_temp'] else "",
+        "weather": current_weather_data['emoji'] if config['show_weather'] else "",
+        "emoji": "".join(active_emojis),
+    }
+    digit_map = DIGIT_STYLE_MAPS[config['digit_style']]
+    parts = []
+    for item in config["name_order"]:
+        value = values.get(item)
+        if value:
+            parts.append(value if item == "emoji" else value.translate(digit_map))
+    return compose_last_name(parts), values["emoji"]
 
 def load_emoji_active_state():
     try:
@@ -428,9 +466,14 @@ def save_text_atomic(path, value, encoding):
 def save_emoji_active_state(value):
     save_text_atomic(EMOJI_STATE_FILE, value, 'utf-8')
 
-async def sleep_until_next_minute():
+async def wait_for_next_name_update(force_event):
     delay = 60 - (time.time() % 60)
-    await asyncio.sleep(max(delay, 0.05))
+    try:
+        await asyncio.wait_for(force_event.wait(), timeout=max(delay, 0.05))
+        force_event.clear()
+        return True
+    except asyncio.TimeoutError:
+        return False
 
 async def update_profile(client, update_lock, **fields):
     async with update_lock:
@@ -441,7 +484,48 @@ async def get_current_last_name(client, update_lock):
         me = await client.get_me()
     return me.last_name or ""
 
-async def change_name_auto(client, update_lock):
+def save_emoji_state_safely(value):
+    try:
+        save_emoji_active_state(value)
+    except OSError:
+        logger.warning("Failed to save Emoji state", exc_info=True)
+
+async def update_last_name_once(
+    client,
+    update_lock,
+    config,
+    local_time,
+    last_sent_name,
+    last_active_emoji,
+    forced=False,
+    force_restore=False,
+):
+    if config['bio_enabled'] and 2 <= local_time.tm_hour < 4:
+        last_name = "💤"
+        if forced or last_name != last_sent_name:
+            await update_profile(client, update_lock, last_name=last_name)
+            logger.info('Updated Last Name -> 💤')
+            return last_name, last_active_emoji, True
+        return last_sent_name, last_active_emoji, False
+
+    last_name, active_emoji = build_dynamic_last_name(config, local_time)
+    emoji_changed = active_emoji != last_active_emoji
+    if not forced and not force_restore and not emoji_changed and not is_update_minute(local_time.tm_min, config['update_interval']):
+        return last_sent_name, last_active_emoji, False
+
+    if not forced and last_name == last_sent_name:
+        if emoji_changed:
+            save_emoji_state_safely(active_emoji)
+            last_active_emoji = active_emoji
+        return last_sent_name, last_active_emoji, False
+
+    await update_profile(client, update_lock, last_name=last_name)
+    save_emoji_state_safely(active_emoji)
+    logger.info('Updated -> %s', last_name)
+    return last_name, active_emoji, True
+
+async def change_name_auto(client, update_lock, force_event=None):
+    force_event = force_event or asyncio.Event()
     last_sent_name = None
     last_active_emoji = load_emoji_active_state()
     first_run = True
@@ -449,71 +533,45 @@ async def change_name_auto(client, update_lock):
         force_restore = False
         try:
             if first_run:
+                forced = force_event.is_set()
+                if forced:
+                    force_event.clear()
                 last_sent_name = await get_current_last_name(client, update_lock)
                 first_run = False
                 initial_time = time.localtime()
                 initial_config = load_config()
                 is_sleep_window = initial_config['bio_enabled'] and 2 <= initial_time.tm_hour < 4
                 force_restore = not is_sleep_window and last_sent_name == "💤"
-                if not is_sleep_window and not force_restore and initial_time.tm_sec > 1:
-                    await sleep_until_next_minute()
+                if not forced and not is_sleep_window and not force_restore and initial_time.tm_sec > 1:
+                    forced = await wait_for_next_name_update(force_event)
             else:
-                await sleep_until_next_minute()
+                forced = await wait_for_next_name_update(force_event)
 
             now = time.localtime()
-            month_day = time.strftime("%m-%d", now)
-            hour_minute = time.strftime("%H:%M", now)
-            timezone_name = get_utc_offset_text(now)
             config = load_config()
-            if config['bio_enabled'] and 2 <= now.tm_hour < 4:
-                last_name = "💤"
-                if last_name != last_sent_name:
-                    await update_profile(client, update_lock, last_name=last_name)
-                    last_sent_name = last_name
-                    logger.info('Updated Last Name -> 💤')
-                continue
-
-            active_emojis = get_active_emoji(config['emoji_schedules'], now)
-            active_emoji = "".join(active_emojis)
-            emoji_changed = active_emoji != last_active_emoji
-            if not force_restore and not emoji_changed and not is_update_minute(now.tm_min, config['update_interval']):
-                continue
-
-            values = {
-                "time": hour_minute if config['show_time'] else "",
-                "timezone": timezone_name if config['show_timezone'] else "",
-                "date": month_day if config['show_date'] else "",
-                "temp": current_weather_data['temp'] if config['show_temp'] else "",
-                "weather": current_weather_data['emoji'] if config['show_weather'] else "",
-            }
-            parts = [values[item] for item in config["name_order"] if values.get(item)]
-            styled_parts = [part.translate(DIGIT_STYLE_MAPS[config['digit_style']]) for part in parts]
-            last_name = compose_last_name(styled_parts, active_emojis)
-            if last_name == last_sent_name:
-                if emoji_changed:
-                    last_active_emoji = active_emoji
-                    try:
-                        save_emoji_active_state(active_emoji)
-                    except OSError:
-                        logger.warning("Failed to save Emoji state", exc_info=True)
-                continue
-            
-            await update_profile(client, update_lock, last_name=last_name)
-            last_sent_name = last_name
-            last_active_emoji = active_emoji
-            try:
-                save_emoji_active_state(active_emoji)
-            except OSError:
-                logger.warning("Failed to save Emoji state", exc_info=True)
-            logger.info(f'Updated -> {last_name}')
+            last_sent_name, last_active_emoji, _ = await update_last_name_once(
+                client,
+                update_lock,
+                config,
+                now,
+                last_sent_name,
+                last_active_emoji,
+                forced=forced,
+                force_restore=force_restore,
+            )
         except FloodWaitError as e:
             logger.warning(f"Flood wait: sleeping {e.seconds} seconds")
+            if forced:
+                force_event.set()
             await asyncio.sleep(e.seconds)
                 
         except Exception as e:
-            logger.error(f"Error: {e}")
+            logger.error("Last Name update error: %s", e, exc_info=True)
+            if forced:
+                await asyncio.sleep(60)
+                force_event.set()
             if first_run:
-                await sleep_until_next_minute()
+                await wait_for_next_name_update(force_event)
 
 def load_bio_update_date():
     try:
@@ -525,46 +583,85 @@ def load_bio_update_date():
 def save_bio_update_date(value):
     save_text_atomic(BIO_STATE_FILE, value.isoformat(), 'ascii')
 
-async def update_bio_auto(client, update_lock):
+async def update_bio_once(client, update_lock, config, today, last_updated_date, forced=False):
+    birth_date = parse_birth_date(config.get("birth_date"))
+    should_update = forced or last_updated_date != today
+    if not config['bio_enabled'] or birth_date is None or not should_update:
+        return last_updated_date, False
+
+    bio_text = build_bio_text(birth_date, config['fixed_bio'], today)
+    if len(bio_text) > MAX_BIO_LENGTH:
+        logger.error("Bio is too long: %s/%s characters", len(bio_text), MAX_BIO_LENGTH)
+        return last_updated_date, False
+
+    await update_profile(client, update_lock, about=bio_text)
+    try:
+        save_bio_update_date(today)
+    except OSError:
+        logger.warning("Failed to save Bio update state", exc_info=True)
+    logger.info('Updated Bio -> %s', bio_text)
+    return today, True
+
+async def wait_for_next_bio_check(force_event):
+    delay = 60 - (time.time() % 60)
+    try:
+        await asyncio.wait_for(force_event.wait(), timeout=max(delay, 0.05))
+        force_event.clear()
+        return True
+    except asyncio.TimeoutError:
+        return False
+
+async def update_bio_auto(client, update_lock, force_event=None):
+    force_event = force_event or asyncio.Event()
     last_updated_date = load_bio_update_date()
+    forced = force_event.is_set()
+    if forced:
+        force_event.clear()
     while True:
         try:
             now = time.localtime()
             today = date(now.tm_year, now.tm_mon, now.tm_mday)
             config = load_config()
-            birth_date = parse_birth_date(config.get("birth_date"))
-            if config['bio_enabled'] and birth_date and now.tm_hour >= 3 and last_updated_date != today:
-                bio_text = build_bio_text(birth_date, config['fixed_bio'], today)
-                if len(bio_text) > MAX_BIO_LENGTH:
-                    logger.error("Bio is too long: %s/%s characters", len(bio_text), MAX_BIO_LENGTH)
-                else:
-                    await update_profile(client, update_lock, about=bio_text)
-                    last_updated_date = today
-                    try:
-                        save_bio_update_date(today)
-                    except OSError:
-                        logger.warning("Failed to save Bio update state", exc_info=True)
-                    logger.info('Updated Bio -> %s', bio_text)
+            if forced or now.tm_hour >= 3:
+                last_updated_date, _ = await update_bio_once(
+                    client,
+                    update_lock,
+                    config,
+                    today,
+                    last_updated_date,
+                    forced=forced,
+                )
         except FloodWaitError as e:
             logger.warning("Bio flood wait: sleeping %s seconds", e.seconds)
+            if forced:
+                force_event.set()
             await asyncio.sleep(e.seconds)
         except Exception as e:
-            logger.error("Bio update error: %s", e)
-        await asyncio.sleep(60 - (time.time() % 60))
+            logger.error("Bio update error: %s", e, exc_info=True)
+            if forced:
+                await asyncio.sleep(60)
+                force_event.set()
+        forced = await wait_for_next_bio_check(force_event)
 
 # ==========================================
 # 【主入口】
 # ==========================================
 async def main():
     os.umask(0o077)
-    migrate_legacy_runtime_files()
     login_only = len(sys.argv) > 1 and sys.argv[1] == '--login'
+    loop = asyncio.get_running_loop()
+    force_name_event = asyncio.Event()
+    force_bio_event = asyncio.Event()
+    if not login_only:
+        loop.add_signal_handler(signal.SIGUSR1, force_name_event.set)
+        loop.add_signal_handler(signal.SIGUSR2, force_bio_event.set)
+
+    migrate_legacy_runtime_files()
     session_exists = os.path.exists(api_auth_file+'.session')
     if not login_only and not session_exists and not sys.stdin.isatty():
         raise RuntimeError("缺少 Telegram 登录 Session，请先运行 `tg` 并使用选项 [1] 初始化账号。")
 
     api_id, api_hash = load_api_credentials(allow_prompt=sys.stdin.isatty())
-        
     client = TelegramClient(api_auth_file, api_id, api_hash)
     await client.start()
     harden_runtime_files()
@@ -575,11 +672,10 @@ async def main():
         await client.disconnect()
         return
 
-    loop = asyncio.get_running_loop()
     update_lock = asyncio.Lock()
-    task_name = asyncio.create_task(change_name_auto(client, update_lock))
+    task_name = asyncio.create_task(change_name_auto(client, update_lock, force_name_event))
     task_weather = asyncio.create_task(update_weather_loop(loop))
-    task_bio = asyncio.create_task(update_bio_auto(client, update_lock))
+    task_bio = asyncio.create_task(update_bio_auto(client, update_lock, force_bio_event))
     
     try:
         await client.run_until_disconnected()

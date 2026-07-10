@@ -9,6 +9,8 @@ import asyncio
 import json
 import urllib.request
 import urllib.parse
+import calendar
+from datetime import date
 from telethon import TelegramClient
 from telethon.errors import FloodWaitError
 from telethon.tl.functions.account import UpdateProfileRequest
@@ -18,6 +20,7 @@ DEFAULT_DATA_DIR = "/var/lib/tg_updater" if os.path.abspath(BASE_DIR) == "/opt/t
 DATA_DIR = os.environ.get("TG_UPDATER_DATA_DIR", DEFAULT_DATA_DIR)
 CONFIG_FILE = os.path.join(DATA_DIR, 'config.json')
 API_CONFIG_FILE = os.path.join(DATA_DIR, 'api_auth.json')
+BIO_STATE_FILE = os.path.join(DATA_DIR, 'bio_last_update.txt')
 api_auth_file = os.path.join(DATA_DIR, 'api_auth')
 LEGACY_CONFIG_FILE = os.path.join(BASE_DIR, 'config.json')
 LEGACY_API_CONFIG_FILE = os.path.join(BASE_DIR, 'api_auth.json')
@@ -37,9 +40,10 @@ ORDER_LABELS = {
     "temp": "温度",
     "weather": "天气",
 }
-DEFAULT_CONFIG = {"show_time": True, "show_timezone": True, "show_date": False, "show_temp": True, "show_weather": True, "location": "Los Angeles", "use_bold": True, "name_order": DEFAULT_NAME_ORDER.copy()}
-BOOL_CONFIG_KEYS = ("show_time", "show_timezone", "show_date", "show_temp", "show_weather", "use_bold")
+DEFAULT_CONFIG = {"show_time": True, "show_timezone": True, "show_date": False, "show_temp": True, "show_weather": True, "location": "Los Angeles", "use_bold": True, "name_order": DEFAULT_NAME_ORDER.copy(), "bio_enabled": False, "birth_date": "", "fixed_bio": ""}
+BOOL_CONFIG_KEYS = ("show_time", "show_timezone", "show_date", "show_temp", "show_weather", "use_bold", "bio_enabled")
 MAX_LOCATION_LENGTH = 80
+MAX_BIO_LENGTH = 70
 
 def normalize_name_order(order):
     if not isinstance(order, list):
@@ -56,6 +60,43 @@ def normalize_name_order(order):
 
     return normalized
 
+def parse_birth_date(value):
+    if not isinstance(value, str):
+        return None
+    try:
+        parsed = date.fromisoformat(value.strip())
+    except ValueError:
+        return None
+    return parsed if parsed <= date.today() else None
+
+def add_months(value, months):
+    month_index = value.year * 12 + value.month - 1 + months
+    year, zero_based_month = divmod(month_index, 12)
+    month = zero_based_month + 1
+    day = min(value.day, calendar.monthrange(year, month)[1])
+    return date(year, month, day)
+
+def calculate_elapsed(birth_date, today=None):
+    today = today or date.today()
+    if birth_date > today:
+        raise ValueError("出生日期不能晚于今天")
+
+    years = today.year - birth_date.year
+    anniversary = add_months(birth_date, years * 12)
+    if anniversary > today:
+        years -= 1
+        anniversary = add_months(birth_date, years * 12)
+
+    months = 0
+    while months < 11 and add_months(anniversary, months + 1) <= today:
+        months += 1
+    checkpoint = add_months(anniversary, months)
+    return years, months, (today - checkpoint).days
+
+def build_bio_text(birth_date, fixed_bio, today=None):
+    years, months, days = calculate_elapsed(birth_date, today)
+    return f"It lasted {years} years {months} months and {days} days | {fixed_bio}"
+
 def sanitize_config(raw_config):
     config = DEFAULT_CONFIG.copy()
     if not isinstance(raw_config, dict):
@@ -70,6 +111,16 @@ def sanitize_config(raw_config):
         config["location"] = location.strip()[:MAX_LOCATION_LENGTH]
 
     config["name_order"] = normalize_name_order(raw_config.get("name_order"))
+    birth_date = parse_birth_date(raw_config.get("birth_date"))
+    if birth_date:
+        config["birth_date"] = birth_date.isoformat()
+
+    fixed_bio = raw_config.get("fixed_bio")
+    if isinstance(fixed_bio, str):
+        config["fixed_bio"] = "".join(char for char in fixed_bio.strip() if char.isprintable())[:MAX_BIO_LENGTH]
+
+    if not config["birth_date"] or not config["fixed_bio"]:
+        config["bio_enabled"] = False
     return config
 
 def load_config():
@@ -150,7 +201,7 @@ def load_api_credentials(allow_prompt=False):
     return api_id, api_hash
 
 def harden_runtime_files():
-    for path in (API_CONFIG_FILE, api_auth_file + '.session', api_auth_file + '.session-journal'):
+    for path in (API_CONFIG_FILE, api_auth_file + '.session', api_auth_file + '.session-journal', BIO_STATE_FILE):
         try:
             if os.path.exists(path) and not os.path.islink(path):
                 os.chmod(path, 0o600)
@@ -203,6 +254,15 @@ async def change_name_auto(client):
             hour_minute = time.strftime("%H:%M", now)
             timezone_name = get_utc_offset_text(now)
             config = load_config()
+            if config['bio_enabled'] and 2 <= now.tm_hour < 4:
+                last_name = "💤"
+                if last_name != last_sent_name:
+                    await client(UpdateProfileRequest(last_name=last_name))
+                    last_sent_name = last_name
+                    logger.info('Updated Last Name -> 💤')
+                await asyncio.sleep(60 - (time.time() % 60))
+                continue
+
             values = {
                 "time": hour_minute if config['show_time'] else "",
                 "timezone": timezone_name if config['show_timezone'] else "",
@@ -227,6 +287,42 @@ async def change_name_auto(client):
                 
         except Exception as e:
             logger.error(f"Error: {e}")
+        await asyncio.sleep(60 - (time.time() % 60))
+
+def load_bio_update_date():
+    try:
+        with open(BIO_STATE_FILE, 'r', encoding='ascii') as f:
+            return date.fromisoformat(f.read().strip())
+    except (OSError, ValueError):
+        return None
+
+def save_bio_update_date(value):
+    with open(BIO_STATE_FILE, 'w', encoding='ascii') as f:
+        f.write(value.isoformat())
+    os.chmod(BIO_STATE_FILE, 0o600)
+
+async def update_bio_auto(client):
+    last_updated_date = load_bio_update_date()
+    while True:
+        try:
+            now = time.localtime()
+            today = date(now.tm_year, now.tm_mon, now.tm_mday)
+            config = load_config()
+            birth_date = parse_birth_date(config.get("birth_date"))
+            if config['bio_enabled'] and birth_date and now.tm_hour >= 3 and last_updated_date != today:
+                bio_text = build_bio_text(birth_date, config['fixed_bio'], today)
+                if len(bio_text) > MAX_BIO_LENGTH:
+                    logger.error("Bio is too long: %s/%s characters", len(bio_text), MAX_BIO_LENGTH)
+                else:
+                    await client(UpdateProfileRequest(about=bio_text))
+                    last_updated_date = today
+                    save_bio_update_date(today)
+                    logger.info('Updated Bio -> %s', bio_text)
+        except FloodWaitError as e:
+            logger.warning("Bio flood wait: sleeping %s seconds", e.seconds)
+            await asyncio.sleep(e.seconds)
+        except Exception as e:
+            logger.error("Bio update error: %s", e)
         await asyncio.sleep(60 - (time.time() % 60))
 
 # ==========================================
@@ -254,13 +350,15 @@ async def main():
     loop = asyncio.get_running_loop()
     task_name = asyncio.create_task(change_name_auto(client))
     task_weather = asyncio.create_task(update_weather_loop(loop))
+    task_bio = asyncio.create_task(update_bio_auto(client))
     
     try:
         await client.run_until_disconnected()
     finally:
         task_name.cancel()
         task_weather.cancel()
-        await asyncio.gather(task_name, task_weather, return_exceptions=True)
+        task_bio.cancel()
+        await asyncio.gather(task_name, task_weather, task_bio, return_exceptions=True)
 
 if __name__ == '__main__':
     asyncio.run(main())

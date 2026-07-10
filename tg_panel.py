@@ -11,12 +11,14 @@ import time
 import unicodedata
 import tempfile
 import secrets
+import calendar
+from datetime import date
 
 # ==========================================
 # 【版本定义】
 # 每次修改代码推送到 GitHub 前，请手动提升此版本号
 # ==========================================
-CURRENT_VERSION = "v1.4.5"
+CURRENT_VERSION = "v1.5.0"
 AUTHOR = "oKafuChino"
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -26,6 +28,7 @@ CONFIG_FILE = os.path.join(DATA_DIR, 'config.json')
 SESSION_FILE = os.path.join(DATA_DIR, 'api_auth.session')
 SESSION_JOURNAL_FILE = os.path.join(DATA_DIR, 'api_auth.session-journal')
 API_CONFIG_FILE = os.path.join(DATA_DIR, 'api_auth.json')
+BIO_STATE_FILE = os.path.join(DATA_DIR, 'bio_last_update.txt')
 LEGACY_CONFIG_FILE = os.path.join(BASE_DIR, 'config.json')
 LEGACY_SESSION_FILE = os.path.join(BASE_DIR, 'api_auth.session')
 LEGACY_SESSION_JOURNAL_FILE = os.path.join(BASE_DIR, 'api_auth.session-journal')
@@ -40,9 +43,10 @@ ORDER_LABELS = {
     "temp": "温度",
     "weather": "天气",
 }
-DEFAULT_CONFIG = {"show_time": True, "show_timezone": True, "show_date": False, "show_temp": True, "show_weather": True, "location": "Los Angeles", "use_bold": True, "name_order": DEFAULT_NAME_ORDER.copy()}
-BOOL_CONFIG_KEYS = ("show_time", "show_timezone", "show_date", "show_temp", "show_weather", "use_bold")
+DEFAULT_CONFIG = {"show_time": True, "show_timezone": True, "show_date": False, "show_temp": True, "show_weather": True, "location": "Los Angeles", "use_bold": True, "name_order": DEFAULT_NAME_ORDER.copy(), "bio_enabled": False, "birth_date": "", "fixed_bio": ""}
+BOOL_CONFIG_KEYS = ("show_time", "show_timezone", "show_date", "show_temp", "show_weather", "use_bold", "bio_enabled")
 MAX_LOCATION_LENGTH = 80
+MAX_BIO_LENGTH = 70
 USE_COLOR = sys.stdout.isatty() and os.environ.get("NO_COLOR") is None and os.environ.get("TERM") != "dumb"
 COLORS = {
     "reset": "\033[0m",
@@ -100,6 +104,43 @@ def format_name_order(order):
 def safe_display(value):
     return "".join(char if char.isprintable() else "?" for char in str(value))
 
+def parse_birth_date(value):
+    if not isinstance(value, str):
+        return None
+    try:
+        parsed = date.fromisoformat(value.strip())
+    except ValueError:
+        return None
+    return parsed if parsed <= date.today() else None
+
+def add_months(value, months):
+    month_index = value.year * 12 + value.month - 1 + months
+    year, zero_based_month = divmod(month_index, 12)
+    month = zero_based_month + 1
+    day = min(value.day, calendar.monthrange(year, month)[1])
+    return date(year, month, day)
+
+def calculate_elapsed(birth_date, today=None):
+    today = today or date.today()
+    if birth_date > today:
+        raise ValueError("出生日期不能晚于今天")
+
+    years = today.year - birth_date.year
+    anniversary = add_months(birth_date, years * 12)
+    if anniversary > today:
+        years -= 1
+        anniversary = add_months(birth_date, years * 12)
+
+    months = 0
+    while months < 11 and add_months(anniversary, months + 1) <= today:
+        months += 1
+    checkpoint = add_months(anniversary, months)
+    return years, months, (today - checkpoint).days
+
+def build_bio_text(birth_date, fixed_bio, today=None):
+    years, months, days = calculate_elapsed(birth_date, today)
+    return f"It lasted {years} years {months} months and {days} days | {fixed_bio}"
+
 def sanitize_config(raw_config):
     config = DEFAULT_CONFIG.copy()
     if not isinstance(raw_config, dict):
@@ -114,6 +155,16 @@ def sanitize_config(raw_config):
         config["location"] = location.strip()[:MAX_LOCATION_LENGTH]
 
     config["name_order"] = normalize_name_order(raw_config.get("name_order"))
+    birth_date = parse_birth_date(raw_config.get("birth_date"))
+    if birth_date:
+        config["birth_date"] = birth_date.isoformat()
+
+    fixed_bio = raw_config.get("fixed_bio")
+    if isinstance(fixed_bio, str):
+        config["fixed_bio"] = "".join(char for char in fixed_bio.strip() if char.isprintable())[:MAX_BIO_LENGTH]
+
+    if not config["birth_date"] or not config["fixed_bio"]:
+        config["bio_enabled"] = False
     return config
 
 def menu_line(key, label, detail="", accent="cyan"):
@@ -158,10 +209,13 @@ def render_menu(config):
     menu_line("10", "输出顺序", format_name_order(config["name_order"]), "magenta")
     menu_line("11", "一键开启全部", "时间 / 时区 / 日期 / 温度 / 天气 / 粗体", "magenta")
 
+    menu_section("Bio 功能")
+    menu_line("12", "Bio 自动更新", state_text(config['bio_enabled']), "blue")
+
     menu_section("维护工具")
-    menu_line("12", "重启后台服务", "立即重载配置", "green")
-    menu_line("13", "检查并更新", "从 GitHub 拉取核心脚本", "green")
-    menu_line("14", "同步服务器时区", "改名显示将使用 UTC 偏移", "green")
+    menu_line("13", "重启后台服务", "立即重载配置", "green")
+    menu_line("14", "检查并更新", "从 GitHub 拉取核心脚本", "green")
+    menu_line("15", "同步服务器时区", "改名显示将使用 UTC 偏移", "green")
 
     print()
     menu_line("99", "一键卸载脚本", "停止服务并删除程序与配置", "red")
@@ -182,7 +236,7 @@ def chown_runtime_files():
     if not os.path.islink(DATA_DIR):
         run_command(["sudo", "chown", f"{SERVICE_USER}:{SERVICE_USER}", DATA_DIR])
         run_command(["sudo", "chmod", "700", DATA_DIR])
-    for path in (CONFIG_FILE, SESSION_FILE, SESSION_JOURNAL_FILE, API_CONFIG_FILE):
+    for path in (CONFIG_FILE, SESSION_FILE, SESSION_JOURNAL_FILE, API_CONFIG_FILE, BIO_STATE_FILE):
         if os.path.exists(path) and not os.path.islink(path):
             try:
                 os.chmod(path, 0o600)
@@ -456,6 +510,49 @@ def configure_name_order(config):
     save_config(config)
     input(f"✅ 输出顺序已更新为: {format_name_order(config['name_order'])}，按回车键返回主菜单...")
 
+def configure_bio(config):
+    if config.get("bio_enabled"):
+        config["bio_enabled"] = False
+        save_config(config)
+        input("✅ Bio 自动更新已关闭，按回车键返回主菜单...")
+        return
+
+    print("\n开启后，每天 03:00 自动更新 Bio。")
+    print("每天 02:00-04:00 暂停动态 Last Name，并显示 💤。")
+    current_birth_date = config.get("birth_date", "")
+    birth_prompt = f"出生日期 YYYY-MM-DD [{current_birth_date}]: " if current_birth_date else "出生日期 YYYY-MM-DD: "
+    raw_birth_date = input(birth_prompt).strip() or current_birth_date
+    birth_date = parse_birth_date(raw_birth_date)
+    if birth_date is None:
+        input("❌ 出生日期无效或晚于今天，按回车键返回主菜单...")
+        return
+
+    current_fixed_bio = config.get("fixed_bio", "")
+    bio_prompt = f"固定 Bio [{current_fixed_bio}]: " if current_fixed_bio else "固定 Bio: "
+    fixed_bio = input(bio_prompt).strip() or current_fixed_bio
+    fixed_bio = "".join(char for char in fixed_bio if char.isprintable())
+    if not fixed_bio:
+        input("❌ 固定 Bio 不能为空，按回车键返回主菜单...")
+        return
+
+    preview = build_bio_text(birth_date, fixed_bio)
+    if len(preview) > MAX_BIO_LENGTH:
+        input(f"❌ 完整 Bio 长度为 {len(preview)}，超过 Telegram 的 {MAX_BIO_LENGTH} 字符限制。请缩短固定 Bio。按回车键返回主菜单...")
+        return
+
+    config.update({
+        "bio_enabled": True,
+        "birth_date": birth_date.isoformat(),
+        "fixed_bio": fixed_bio,
+    })
+    try:
+        os.unlink(BIO_STATE_FILE)
+    except FileNotFoundError:
+        pass
+    save_config(config)
+    print(f"\nBio 预览: {preview}")
+    input("✅ Bio 自动更新已开启，按回车键返回主菜单...")
+
 def main_menu():
     migrate_legacy_runtime_files()
     while True:
@@ -463,7 +560,7 @@ def main_menu():
         config = load_config()
         render_menu(config)
         
-        choice = input(color("请输入选项 (0-14, 99): ", "cyan", "bold")).strip()
+        choice = input(color("请输入选项 (0-15, 99): ", "cyan", "bold")).strip()
         
         if choice == '0':
             print("退出面板。")
@@ -539,12 +636,15 @@ def main_menu():
             save_config(config)
             
         elif choice == '12':
+            configure_bio(config)
+
+        elif choice == '13':
             print("\n正在强制重启后台服务...")
             run_command(["sudo", "systemctl", "restart", "tg_name.service"])
             print("✅ 服务已重启，将立即触发一次强制更新！")
             input("按回车键返回主菜单...")
             
-        elif choice == '13':
+        elif choice == '14':
             if BASE_DIR != "/opt/tg_updater":
                 input("❌ 当前面板不在 /opt/tg_updater，已取消更新以避免覆盖安装目录。按回车键返回主菜单...")
                 continue
@@ -610,7 +710,7 @@ def main_menu():
                 print("\n❌ 更新失败！请检查 VPS 网络连接或 GitHub 仓库地址是否正确。")
             input("按回车键返回主菜单...")
             
-        elif choice == '14':
+        elif choice == '15':
             loc = config.get('location', '').lower()
             # 建立常见城市与标准时区 (IANA) 的映射字典
             tz_mapping = {

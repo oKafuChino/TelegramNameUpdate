@@ -6,6 +6,9 @@
   "show_weather": true,
   "location": "Los Angeles",
   "use_bold": true,
+  "bio_enabled": false,
+  "birth_date": "",
+  "fixed_bio": "",
   "name_order": [
     "time",
     "timezone",

@@ -12,23 +12,26 @@ import unicodedata
 import tempfile
 import secrets
 import calendar
+import ast
 from datetime import date
 
 # ==========================================
 # 【版本定义】
 # 每次修改代码推送到 GitHub 前，请手动提升此版本号
 # ==========================================
-CURRENT_VERSION = "v1.5.0"
+CURRENT_VERSION = "v1.7.1"
 AUTHOR = "oKafuChino"
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-DEFAULT_DATA_DIR = "/var/lib/tg_updater" if BASE_DIR == "/opt/tg_updater" else BASE_DIR
-DATA_DIR = os.environ.get("TG_UPDATER_DATA_DIR", DEFAULT_DATA_DIR)
+IS_INSTALLED = BASE_DIR == "/opt/tg_updater"
+DEFAULT_DATA_DIR = "/var/lib/tg_updater" if IS_INSTALLED else BASE_DIR
+DATA_DIR = DEFAULT_DATA_DIR if IS_INSTALLED else os.environ.get("TG_UPDATER_DATA_DIR", DEFAULT_DATA_DIR)
 CONFIG_FILE = os.path.join(DATA_DIR, 'config.json')
 SESSION_FILE = os.path.join(DATA_DIR, 'api_auth.session')
 SESSION_JOURNAL_FILE = os.path.join(DATA_DIR, 'api_auth.session-journal')
 API_CONFIG_FILE = os.path.join(DATA_DIR, 'api_auth.json')
 BIO_STATE_FILE = os.path.join(DATA_DIR, 'bio_last_update.txt')
+EMOJI_STATE_FILE = os.path.join(DATA_DIR, 'emoji_last_active.txt')
 LEGACY_CONFIG_FILE = os.path.join(BASE_DIR, 'config.json')
 LEGACY_SESSION_FILE = os.path.join(BASE_DIR, 'api_auth.session')
 LEGACY_SESSION_JOURNAL_FILE = os.path.join(BASE_DIR, 'api_auth.session-journal')
@@ -43,10 +46,23 @@ ORDER_LABELS = {
     "temp": "温度",
     "weather": "天气",
 }
-DEFAULT_CONFIG = {"show_time": True, "show_timezone": True, "show_date": False, "show_temp": True, "show_weather": True, "location": "Los Angeles", "use_bold": True, "name_order": DEFAULT_NAME_ORDER.copy(), "bio_enabled": False, "birth_date": "", "fixed_bio": ""}
-BOOL_CONFIG_KEYS = ("show_time", "show_timezone", "show_date", "show_temp", "show_weather", "use_bold", "bio_enabled")
+DEFAULT_CONFIG = {"show_time": True, "show_timezone": True, "show_date": False, "show_temp": True, "show_weather": True, "location": "Los Angeles", "digit_style": "sans_bold", "name_order": DEFAULT_NAME_ORDER.copy(), "bio_enabled": False, "birth_date": "", "fixed_bio": "", "update_interval": 1, "emoji_schedules": []}
+BOOL_CONFIG_KEYS = ("show_time", "show_timezone", "show_date", "show_temp", "show_weather", "bio_enabled")
+DIGIT_STYLES = {
+    "normal": "1",
+    "sans_bold": "𝟭",
+    "serif_bold": "𝟏",
+    "double_struck": "𝟙",
+}
+UPDATE_INTERVALS = (1, 5, 15, 30, 60)
 MAX_LOCATION_LENGTH = 80
 MAX_BIO_LENGTH = 70
+MAX_EMOJI_RULES = 20
+MAX_EMOJI_TEXT_LENGTH = 32
+MAX_ACTIVE_EMOJI_LENGTH = 32
+MAX_CONFIG_FILE_SIZE = 256 * 1024
+MAX_REMOTE_FILE_SIZE = 2 * 1024 * 1024
+MAX_VERSION_RESPONSE_SIZE = 512 * 1024
 USE_COLOR = sys.stdout.isatty() and os.environ.get("NO_COLOR") is None and os.environ.get("TERM") != "dumb"
 COLORS = {
     "reset": "\033[0m",
@@ -104,6 +120,78 @@ def format_name_order(order):
 def safe_display(value):
     return "".join(char if char.isprintable() else "?" for char in str(value))
 
+def parse_time_text(value):
+    if not isinstance(value, str) or not re.fullmatch(r"(?:[01]\d|2[0-3]):[0-5]\d", value.strip()):
+        return None
+    return value.strip()
+
+def is_emoji_codepoint(char):
+    codepoint = ord(char)
+    return (
+        0x1F000 <= codepoint <= 0x1FAFF
+        or 0x2600 <= codepoint <= 0x27BF
+        or 0x2300 <= codepoint <= 0x23FF
+        or 0x2B00 <= codepoint <= 0x2BFF
+        or codepoint in (0x00A9, 0x00AE, 0x203C, 0x2049, 0x2122, 0x2139, 0x3030, 0x303D, 0x3297, 0x3299)
+    )
+
+def sanitize_emoji_text(value):
+    if not isinstance(value, str):
+        return ""
+    cleaned = " ".join(value.strip().split())
+    has_keycap = "\u20e3" in cleaned
+    allowed_components = {"\u200d", "\ufe0e", "\ufe0f", "\u20e3"}
+    if (
+        not cleaned
+        or len(cleaned) > MAX_EMOJI_TEXT_LENGTH
+        or not (any(is_emoji_codepoint(char) for char in cleaned) or has_keycap)
+        or any(
+            not (
+                is_emoji_codepoint(char)
+                or char in allowed_components
+                or char == " "
+                or (has_keycap and char in "#*0123456789")
+            )
+            for char in cleaned
+        )
+    ):
+        return ""
+    return cleaned
+
+def time_to_minute(value):
+    return int(value[:2]) * 60 + int(value[3:])
+
+def is_rule_active(rule, minute_of_day):
+    start = time_to_minute(rule["start"])
+    end = time_to_minute(rule["end"])
+    if start < end:
+        return start <= minute_of_day < end
+    return minute_of_day >= start or minute_of_day < end
+
+def max_active_emoji_length(schedules):
+    return max(
+        (sum(len(rule["emoji"]) for rule in schedules if is_rule_active(rule, minute)) for minute in range(1440)),
+        default=0,
+    )
+
+def normalize_emoji_schedules(schedules):
+    if not isinstance(schedules, list):
+        return []
+
+    normalized = []
+    for rule in schedules:
+        if not isinstance(rule, dict):
+            continue
+        start = parse_time_text(rule.get("start"))
+        end = parse_time_text(rule.get("end"))
+        emoji = sanitize_emoji_text(rule.get("emoji"))
+        candidate = {"start": start, "end": end, "emoji": emoji}
+        if start and end and start != end and emoji and max_active_emoji_length([*normalized, candidate]) <= MAX_ACTIVE_EMOJI_LENGTH:
+            normalized.append(candidate)
+        if len(normalized) >= MAX_EMOJI_RULES:
+            break
+    return normalized
+
 def parse_birth_date(value):
     if not isinstance(value, str):
         return None
@@ -150,6 +238,12 @@ def sanitize_config(raw_config):
         if isinstance(raw_config.get(key), bool):
             config[key] = raw_config[key]
 
+    digit_style = raw_config.get("digit_style")
+    if digit_style in DIGIT_STYLES:
+        config["digit_style"] = digit_style
+    elif isinstance(raw_config.get("use_bold"), bool):
+        config["digit_style"] = "sans_bold" if raw_config["use_bold"] else "normal"
+
     location = raw_config.get("location")
     if isinstance(location, str) and location.strip():
         config["location"] = location.strip()[:MAX_LOCATION_LENGTH]
@@ -165,6 +259,13 @@ def sanitize_config(raw_config):
 
     if not config["birth_date"] or not config["fixed_bio"]:
         config["bio_enabled"] = False
+    elif len(build_bio_text(birth_date, config["fixed_bio"])) > MAX_BIO_LENGTH:
+        config["bio_enabled"] = False
+
+    update_interval = raw_config.get("update_interval")
+    if isinstance(update_interval, int) and not isinstance(update_interval, bool) and update_interval in UPDATE_INTERVALS:
+        config["update_interval"] = update_interval
+    config["emoji_schedules"] = normalize_emoji_schedules(raw_config.get("emoji_schedules"))
     return config
 
 def menu_line(key, label, detail="", accent="cyan"):
@@ -204,18 +305,20 @@ def render_menu(config):
     menu_line("5", "显示日期", state_text(config['show_date']), "magenta")
     menu_line("6", "显示温度", state_text(config['show_temp']), "magenta")
     menu_line("7", "显示天气", state_text(config['show_weather']), "magenta")
-    menu_line("8", "粗体显示", state_text(config['use_bold']), "magenta")
+    menu_line("8", "数字字体", f"样式: {DIGIT_STYLES[config['digit_style']]}", "magenta")
     menu_line("9", "设置地区", f"当前: {safe_display(config['location'])}", "magenta")
     menu_line("10", "输出顺序", format_name_order(config["name_order"]), "magenta")
-    menu_line("11", "一键开启全部", "时间 / 时区 / 日期 / 温度 / 天气 / 粗体", "magenta")
+    menu_line("11", "一键开启全部", "时间 / 时区 / 日期 / 温度 / 天气", "magenta")
 
-    menu_section("Bio 功能")
+    menu_section("自动化设置")
     menu_line("12", "Bio 自动更新", state_text(config['bio_enabled']), "blue")
+    menu_line("13", "Last Name 频率", f"每 {config['update_interval']} 分钟", "blue")
+    menu_line("14", "Emoji 时段", f"{len(config['emoji_schedules'])} 条规则", "blue")
 
     menu_section("维护工具")
-    menu_line("13", "重启后台服务", "立即重载配置", "green")
-    menu_line("14", "检查并更新", "从 GitHub 拉取核心脚本", "green")
-    menu_line("15", "同步服务器时区", "改名显示将使用 UTC 偏移", "green")
+    menu_line("15", "重启后台服务", "立即重载配置", "green")
+    menu_line("16", "检查并更新", "从 GitHub 拉取核心脚本", "green")
+    menu_line("17", "同步服务器时区", "改名显示将使用 UTC 偏移", "green")
 
     print()
     menu_line("99", "一键卸载脚本", "停止服务并删除程序与配置", "red")
@@ -236,7 +339,7 @@ def chown_runtime_files():
     if not os.path.islink(DATA_DIR):
         run_command(["sudo", "chown", f"{SERVICE_USER}:{SERVICE_USER}", DATA_DIR])
         run_command(["sudo", "chmod", "700", DATA_DIR])
-    for path in (CONFIG_FILE, SESSION_FILE, SESSION_JOURNAL_FILE, API_CONFIG_FILE, BIO_STATE_FILE):
+    for path in (CONFIG_FILE, SESSION_FILE, SESSION_JOURNAL_FILE, API_CONFIG_FILE, BIO_STATE_FILE, EMOJI_STATE_FILE):
         if os.path.exists(path) and not os.path.islink(path):
             try:
                 os.chmod(path, 0o600)
@@ -283,21 +386,24 @@ def get_remote_version():
             headers={'Cache-Control': 'no-cache, no-store', 'Pragma': 'no-cache'}
         )
         with urllib.request.urlopen(req, timeout=1.5) as response:
-            content = response.read().decode('utf-8')
-            match = re.search(r'CURRENT_VERSION\s*=\s*"([^"]+)"', content)
-            if match:
-                return match.group(1)
+            content_bytes = response.read(MAX_VERSION_RESPONSE_SIZE + 1)
+            if len(content_bytes) > MAX_VERSION_RESPONSE_SIZE:
+                return None
+            content = content_bytes.decode('utf-8')
+            version = extract_version_from_source(content, "remote tg_panel.py")
+            if parse_version(version) is not None:
+                return version
     except Exception:
         pass 
     return None
 
 def parse_version(version):
-    if not version:
+    if not isinstance(version, str):
         return None
-    numbers = re.findall(r'\d+', version)
-    if not numbers:
+    match = re.fullmatch(r"v?(\d+(?:\.\d+)*)", version.strip())
+    if not match:
         return None
-    return tuple(int(number) for number in numbers)
+    return tuple(int(number) for number in match.group(1).split("."))
 
 def compare_versions(left, right):
     left_parts = parse_version(left)
@@ -314,11 +420,26 @@ def extract_version_from_file(path):
     try:
         with open(path, 'r', encoding='utf-8') as f:
             content = f.read()
-    except OSError:
+    except (OSError, UnicodeDecodeError):
         return None
 
-    match = re.search(r'CURRENT_VERSION\s*=\s*"([^"]+)"', content)
-    return match.group(1) if match else None
+    return extract_version_from_source(content, path)
+
+def extract_version_from_source(content, filename="<string>"):
+    try:
+        tree = ast.parse(content, filename=filename)
+    except (TypeError, SyntaxError, ValueError):
+        return None
+
+    for node in tree.body:
+        value = None
+        if isinstance(node, ast.Assign) and any(isinstance(target, ast.Name) and target.id == "CURRENT_VERSION" for target in node.targets):
+            value = node.value
+        elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name) and node.target.id == "CURRENT_VERSION":
+            value = node.value
+        if isinstance(value, ast.Constant) and isinstance(value.value, str):
+            return value.value
+    return None
 
 def load_config():
     loaded = {}
@@ -326,9 +447,14 @@ def load_config():
         return sanitize_config(loaded)
     try:
         with open(CONFIG_FILE, 'r', encoding='utf-8') as f:
-            loaded = json.load(f)
+            content = f.read(MAX_CONFIG_FILE_SIZE + 1)
+        if len(content) > MAX_CONFIG_FILE_SIZE:
+            raise ValueError("配置文件超过大小限制")
+        loaded = json.loads(content)
     except (OSError, json.JSONDecodeError) as e:
         print(f"⚠️ 配置文件读取失败，已使用默认配置: {e}")
+    except ValueError as e:
+        print(f"⚠️ 配置文件无效，已使用默认配置: {e}")
     return sanitize_config(loaded)
 
 def write_json_atomic(path, data):
@@ -375,10 +501,17 @@ def download_remote_file(filename, target):
         with os.fdopen(fd, 'wb') as f:
             fd = None
             with urllib.request.urlopen(req, timeout=20) as response:
+                content_length = response.headers.get("Content-Length")
+                if content_length and int(content_length) > MAX_REMOTE_FILE_SIZE:
+                    raise ValueError("远程文件超过大小限制")
+                downloaded = 0
                 while True:
                     chunk = response.read(65536)
                     if not chunk:
                         break
+                    downloaded += len(chunk)
+                    if downloaded > MAX_REMOTE_FILE_SIZE:
+                        raise ValueError("远程文件超过大小限制")
                     f.write(chunk)
         os.chmod(tmp_target, 0o644)
         return 0, tmp_target
@@ -396,13 +529,21 @@ def download_remote_file(filename, target):
         print(f"下载 {filename} 失败: {e}")
         return 1, tmp_target or ""
 
-def validate_python_file(path):
-    return run_command([
-        sys.executable,
-        "-c",
-        "import ast, pathlib, sys; ast.parse(pathlib.Path(sys.argv[1]).read_text(encoding='utf-8'), filename=sys.argv[1])",
-        path
-    ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL) == 0
+def validate_python_file(path, required_symbols=()):
+    try:
+        if os.path.getsize(path) > MAX_REMOTE_FILE_SIZE:
+            return False
+        with open(path, 'r', encoding='utf-8') as f:
+            tree = ast.parse(f.read(), filename=path)
+    except (OSError, UnicodeDecodeError, SyntaxError):
+        return False
+
+    symbols = {node.name for node in tree.body if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))}
+    for node in tree.body:
+        if isinstance(node, (ast.Assign, ast.AnnAssign)):
+            targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+            symbols.update(target.id for target in targets if isinstance(target, ast.Name))
+    return all(symbol in symbols for symbol in required_symbols)
 
 def replace_remote_file(tmp_target, target):
     return run_command(["sudo", "mv", tmp_target, target])
@@ -458,19 +599,51 @@ def uninstall_script():
             input("❌ 卸载路径校验失败，按回车键返回主菜单...")
             return
 
+    failures = []
+
     print("\n正在停止并禁用服务...")
     run_command(["sudo", "systemctl", "stop", "tg_name.service"])
+    if run_command(["sudo", "systemctl", "is-active", "--quiet", "tg_name.service"]) == 0:
+        failures.append("后台服务仍在运行")
     run_command(["sudo", "systemctl", "disable", "tg_name.service"])
-    run_command(["sudo", "rm", "-f", "/etc/systemd/system/tg_name.service"])
-    run_command(["sudo", "systemctl", "daemon-reload"])
+    if run_command([
+        "sudo", "rm", "-f",
+        "/etc/systemd/system/tg_name.service",
+        "/etc/systemd/system/multi-user.target.wants/tg_name.service",
+    ]) != 0:
+        failures.append("systemd 服务文件删除失败")
+    if run_command(["sudo", "systemctl", "daemon-reload"]) != 0:
+        failures.append("systemd 配置刷新失败")
 
     print("正在删除快捷命令...")
-    run_command(["sudo", "rm", "-f", "/usr/local/bin/tg", "/usr/local/bin/tg_py"])
+    if run_command(["sudo", "rm", "-f", "/usr/local/bin/tg", "/usr/local/bin/tg_py"]) != 0:
+        failures.append("快捷命令删除失败")
 
     print("正在删除程序和运行数据...")
-    run_command(["sudo", "rm", "-rf", project_dir])
-    run_command(["sudo", "rm", "-rf", data_dir])
+    if run_command(["sudo", "rm", "-rf", data_dir]) != 0:
+        failures.append("运行数据目录删除失败")
+    if run_command(["sudo", "rm", "-rf", project_dir]) != 0:
+        failures.append("程序目录删除失败")
 
+    remaining_paths = [
+        path for path in (
+            "/etc/systemd/system/tg_name.service",
+            "/etc/systemd/system/multi-user.target.wants/tg_name.service",
+            "/usr/local/bin/tg",
+            "/usr/local/bin/tg_py",
+            data_dir,
+            project_dir,
+        )
+        if os.path.lexists(path)
+    ]
+    if remaining_paths:
+        failures.append("仍有文件未删除: " + ", ".join(remaining_paths))
+    if failures:
+        print("\n❌ 卸载未完整完成:")
+        for failure in failures:
+            print(f"  - {failure}")
+        print("请检查 sudo 权限并手动清理上述残留。")
+        sys.exit(1)
     print("\n✅ 卸载完成。")
     sys.exit(0)
 
@@ -553,6 +726,123 @@ def configure_bio(config):
     print(f"\nBio 预览: {preview}")
     input("✅ Bio 自动更新已开启，按回车键返回主菜单...")
 
+def configure_update_interval(config):
+    print(f"\n当前 Last Name 更新频率: 每 {config['update_interval']} 分钟")
+    print("可选频率:")
+    for index, interval in enumerate(UPDATE_INTERVALS, 1):
+        if interval == 60:
+            schedule = "每小时整点"
+        elif interval == 1:
+            schedule = "每个整分钟"
+        else:
+            schedule = "每小时 " + "、".join(f"{minute:02d} 分" for minute in range(0, 60, interval))
+        print(f"  {index}. {interval} 分钟 ({schedule})")
+
+    choice = input("请选择频率 (直接回车取消): ").strip()
+    if not choice:
+        return
+    if not choice.isdigit() or not 1 <= int(choice) <= len(UPDATE_INTERVALS):
+        input("❌ 选项无效，按回车键返回主菜单...")
+        return
+
+    config["update_interval"] = UPDATE_INTERVALS[int(choice) - 1]
+    save_config(config)
+    input(f"✅ Last Name 更新频率已设置为每 {config['update_interval']} 分钟，按回车键返回主菜单...")
+
+def configure_digit_style(config):
+    style_keys = list(DIGIT_STYLES)
+    print("\n请选择数字字体:")
+    for index, key in enumerate(style_keys, 1):
+        marker = " (当前)" if key == config["digit_style"] else ""
+        sample = "0123456789".translate(str.maketrans("0123456789", {
+            "normal": "0123456789",
+            "sans_bold": "𝟬𝟭𝟮𝟯𝟰𝟱𝟲𝟳𝟴𝟵",
+            "serif_bold": "𝟎𝟏𝟐𝟑𝟒𝟓𝟔𝟕𝟖𝟗",
+            "double_struck": "𝟘𝟙𝟚𝟛𝟜𝟝𝟞𝟟𝟠𝟡",
+        }[key]))
+        print(f"  {index}. {sample}{marker}")
+
+    choice = input("请选择字体 (直接回车取消): ").strip()
+    if not choice:
+        return
+    if not choice.isdigit() or not 1 <= int(choice) <= len(style_keys):
+        input("❌ 选项无效，按回车键返回主菜单...")
+        return
+
+    config["digit_style"] = style_keys[int(choice) - 1]
+    save_config(config)
+    input(f"✅ 数字字体已切换为 {DIGIT_STYLES[config['digit_style']]}，按回车键返回主菜单...")
+
+def print_emoji_schedules(schedules):
+    if not schedules:
+        print("  暂无规则")
+        return
+    for index, rule in enumerate(schedules, 1):
+        suffix = " (跨午夜)" if rule["start"] > rule["end"] else ""
+        print(f"  {index}. {rule['start']}-{rule['end']}  {rule['emoji']}{suffix}")
+
+def configure_emoji_schedules(config):
+    while True:
+        clear_screen()
+        print(color("Emoji 时段规则", "cyan", "bold"))
+        print("时间区间为左闭右开，例如 09:00-12:00 在 12:00 停止显示。")
+        print("多条规则同时命中时，Emoji 会按规则顺序合并。\n")
+        print_emoji_schedules(config["emoji_schedules"])
+        print("\n  [1] 添加规则")
+        print("  [2] 删除规则")
+        print("  [3] 清空规则")
+        print("  [0] 返回主菜单")
+        choice = input("\n请选择操作: ").strip()
+
+        if choice == "0":
+            return
+
+        if choice == "1":
+            if len(config["emoji_schedules"]) >= MAX_EMOJI_RULES:
+                input(f"❌ 最多只能添加 {MAX_EMOJI_RULES} 条规则，按回车键继续...")
+                continue
+            start = parse_time_text(input("开始时间 HH:MM: ").strip())
+            end = parse_time_text(input("结束时间 HH:MM: ").strip())
+            emoji = sanitize_emoji_text(input("Emoji (可输入多个): ").strip())
+            if not start or not end or start == end:
+                input("❌ 时间格式无效，且开始时间不能等于结束时间。按回车键继续...")
+                continue
+            if not emoji:
+                input("❌ Emoji 无效或过长，请至少输入一个 Emoji。按回车键继续...")
+                continue
+            candidate = {"start": start, "end": end, "emoji": emoji}
+            if max_active_emoji_length([*config["emoji_schedules"], candidate]) > MAX_ACTIVE_EMOJI_LENGTH:
+                input(f"❌ 所有规则同时命中时最多允许 {MAX_ACTIVE_EMOJI_LENGTH} 个字符，请减少 Emoji。按回车键继续...")
+                continue
+            config["emoji_schedules"].append(candidate)
+            save_config(config)
+            input("✅ Emoji 规则已添加，按回车键继续...")
+            continue
+
+        if choice == "2":
+            if not config["emoji_schedules"]:
+                input("暂无可删除规则，按回车键继续...")
+                continue
+            raw_index = input("请输入要删除的规则编号 (直接回车取消): ").strip()
+            if not raw_index:
+                continue
+            if not raw_index.isdigit() or not 1 <= int(raw_index) <= len(config["emoji_schedules"]):
+                input("❌ 规则编号无效，按回车键继续...")
+                continue
+            removed = config["emoji_schedules"].pop(int(raw_index) - 1)
+            save_config(config)
+            input(f"✅ 已删除 {removed['start']}-{removed['end']} {removed['emoji']}，按回车键继续...")
+            continue
+
+        if choice == "3":
+            if input("输入 DELETE 确认清空全部规则: ").strip() == "DELETE":
+                config["emoji_schedules"] = []
+                save_config(config)
+                input("✅ Emoji 规则已清空，按回车键继续...")
+            continue
+
+        input("❌ 选项无效，按回车键继续...")
+
 def main_menu():
     migrate_legacy_runtime_files()
     while True:
@@ -560,7 +850,7 @@ def main_menu():
         config = load_config()
         render_menu(config)
         
-        choice = input(color("请输入选项 (0-15, 99): ", "cyan", "bold")).strip()
+        choice = input(color("请输入选项 (0-17, 99): ", "cyan", "bold")).strip()
         
         if choice == '0':
             print("退出面板。")
@@ -584,8 +874,11 @@ def main_menu():
             if login_result == 0:
                 chown_runtime_files()
                 print("\n正在重启后台服务...")
-                run_command(["sudo", "systemctl", "restart", "tg_name.service"])
-                input("✅ 配置已生效，按回车键返回主菜单...")
+                restart_code = run_command(["sudo", "systemctl", "restart", "tg_name.service"])
+                if restart_code == 0:
+                    input("✅ 配置已生效，按回车键返回主菜单...")
+                else:
+                    input("⚠️ 登录成功，但后台服务重启失败，请使用 [2] 查看日志。按回车键返回主菜单...")
             else:
                 input("❌ 登录失败，后台服务未重启。按回车键返回主菜单...")
             
@@ -616,8 +909,7 @@ def main_menu():
             save_config(config)
             
         elif choice == '8':
-            config['use_bold'] = not config['use_bold']
-            save_config(config)
+            configure_digit_style(config)
             
         elif choice == '9':
             new_loc = input("请输入新的城市名称 (拼音或英文): ").strip()
@@ -632,19 +924,28 @@ def main_menu():
             configure_name_order(config)
                 
         elif choice == '11':
-            config.update({"show_time": True, "show_timezone": True, "show_date": True, "show_temp": True, "show_weather": True, "use_bold": True})
+            config.update({"show_time": True, "show_timezone": True, "show_date": True, "show_temp": True, "show_weather": True})
             save_config(config)
             
         elif choice == '12':
             configure_bio(config)
 
         elif choice == '13':
+            configure_update_interval(config)
+
+        elif choice == '14':
+            configure_emoji_schedules(config)
+
+        elif choice == '15':
             print("\n正在强制重启后台服务...")
-            run_command(["sudo", "systemctl", "restart", "tg_name.service"])
-            print("✅ 服务已重启，将立即触发一次强制更新！")
+            restart_code = run_command(["sudo", "systemctl", "restart", "tg_name.service"])
+            if restart_code == 0:
+                print("✅ 服务已重启，Last Name 将在下一个设定时间点更新。")
+            else:
+                print("❌ 服务重启失败，请使用 [2] 查看日志。")
             input("按回车键返回主菜单...")
             
-        elif choice == '14':
+        elif choice == '16':
             if BASE_DIR != "/opt/tg_updater":
                 input("❌ 当前面板不在 /opt/tg_updater，已取消更新以避免覆盖安装目录。按回车键返回主菜单...")
                 continue
@@ -668,16 +969,18 @@ def main_menu():
             res2, panel_tmp = download_remote_file("tg_panel.py", panel_target)
             
             if res1 == 0 and res2 == 0:
-                if not validate_python_file(daemon_tmp) or not validate_python_file(panel_tmp):
+                daemon_valid = validate_python_file(daemon_tmp, ("main", "change_name_auto"))
+                panel_valid = validate_python_file(panel_tmp, ("CURRENT_VERSION", "main_menu"))
+                if not daemon_valid or not panel_valid:
                     cleanup_temp_files(daemon_tmp, panel_tmp)
                     print("\n❌ 更新失败！下载文件未通过 Python 语法校验，已取消覆盖。")
                     input("按回车键返回主菜单...")
                     continue
 
                 downloaded_version = extract_version_from_file(panel_tmp)
-                if downloaded_version is None:
+                if downloaded_version is None or parse_version(downloaded_version) is None:
                     cleanup_temp_files(daemon_tmp, panel_tmp)
-                    print("\n❌ 更新失败！下载到的面板脚本缺少 CURRENT_VERSION，已取消覆盖。")
+                    print("\n❌ 更新失败！下载到的面板脚本版本号缺失或格式无效，已取消覆盖。")
                     input("按回车键返回主菜单...")
                     continue
                 downloaded_compare = compare_versions(downloaded_version, CURRENT_VERSION)
@@ -699,8 +1002,11 @@ def main_menu():
                     run_command(["sudo", "chown", "root:root", panel_target])
                     harden_code_files()
                     print(">> 正在重启后台服务...")
-                    run_command(["sudo", "systemctl", "restart", "tg_name.service"])
-                    print("\n✅ 更新成功！核心代码与后台服务均已同步至 GitHub 最新版本。")
+                    restart_code = run_command(["sudo", "systemctl", "restart", "tg_name.service"])
+                    if restart_code == 0:
+                        print("\n✅ 更新成功！核心代码与后台服务均已同步至 GitHub 最新版本。")
+                    else:
+                        print("\n⚠️ 核心代码更新成功，但后台服务重启失败，请使用 [2] 查看日志。")
                     print("⚠️ 提示：由于当前管理面板已载入内存，建议您输入 [0] 退出面板并重新敲击 'tg' 载入新版本界面。")
                 else:
                     cleanup_temp_files(daemon_tmp, panel_tmp)
@@ -710,7 +1016,7 @@ def main_menu():
                 print("\n❌ 更新失败！请检查 VPS 网络连接或 GitHub 仓库地址是否正确。")
             input("按回车键返回主菜单...")
             
-        elif choice == '15':
+        elif choice == '17':
             loc = config.get('location', '').lower()
             # 建立常见城市与标准时区 (IANA) 的映射字典
             tz_mapping = {
@@ -731,10 +1037,14 @@ def main_menu():
             }
             
             target_tz = tz_mapping.get(loc)
+            timezone_changed = False
             if target_tz:
                 print(f"\n>> 识别到设定城市 [{config['location']}]，正在修改 VPS 系统时区为: {target_tz}...")
-                run_command(["sudo", "timedatectl", "set-timezone", target_tz])
-                print("✅ 时区同步成功！改名显示将按当前服务器时区显示 UTC 偏移。")
+                timezone_changed = run_command(["sudo", "timedatectl", "set-timezone", target_tz]) == 0
+                if timezone_changed:
+                    print("✅ 时区同步成功！改名显示将按当前服务器时区显示 UTC 偏移。")
+                else:
+                    print("❌ 时区同步失败，请检查 sudo 权限或系统是否支持 timedatectl。")
             else:
                 print(f"\n❌ 无法自动匹配城市 [{config['location']}] 的标准时区。")
                 print("您可以手动输入 IANA 标准时区格式（例如: Asia/Shanghai, America/New_York）")
@@ -742,12 +1052,15 @@ def main_menu():
                 if manual_tz:
                     res = run_command(["sudo", "timedatectl", "set-timezone", manual_tz], stderr=subprocess.DEVNULL)
                     if res == 0:
+                        timezone_changed = True
                         print(f"✅ 时区已手动设置为: {manual_tz}！改名显示将按当前服务器时区显示 UTC 偏移。")
                     else:
                         print("❌ 设置失败，请检查时区名称是否拼写正确。")
             
-            print("\n正在重启后台服务刷新显示时间...")
-            run_command(["sudo", "systemctl", "restart", "tg_name.service"])
+            if timezone_changed:
+                print("\n正在重启后台服务刷新显示时间...")
+                if run_command(["sudo", "systemctl", "restart", "tg_name.service"]) != 0:
+                    print("⚠️ 时区已设置，但后台服务重启失败，请使用 [2] 查看日志。")
             input("按回车键返回主菜单...")
 if __name__ == "__main__":
     main_menu()

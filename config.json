@@ -5,10 +5,12 @@
   "show_temp": true,
   "show_weather": true,
   "location": "Los Angeles",
-  "use_bold": true,
+  "digit_style": "sans_bold",
   "bio_enabled": false,
   "birth_date": "",
   "fixed_bio": "",
+  "update_interval": 1,
+  "emoji_schedules": [],
   "name_order": [
     "time",
     "timezone",

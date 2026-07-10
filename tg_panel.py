@@ -13,13 +13,15 @@ import tempfile
 import secrets
 import calendar
 import ast
+import shutil
+import shlex
 from datetime import date
 
 # ==========================================
 # 【版本定义】
 # 每次修改代码推送到 GitHub 前，请手动提升此版本号
 # ==========================================
-CURRENT_VERSION = "v1.8.1"
+CURRENT_VERSION = "v1.8.2"
 AUTHOR = "oKafuChino"
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -331,9 +333,37 @@ def render_menu(config):
     menu_line("0", "退出管理面板", "", "red")
     print(color("─"*56, "cyan"))
 
+def is_root_user():
+    return hasattr(os, "geteuid") and os.geteuid() == 0
+
+def quote_shell_command(command):
+    return " ".join(shlex.quote(str(part)) for part in command)
+
+def command_as_user(user, command, command_exists=shutil.which, is_root=None):
+    if is_root is None:
+        is_root = is_root_user()
+    if is_root:
+        if command_exists("runuser"):
+            return ["runuser", "-u", user, "--", *command]
+        if command_exists("sudo"):
+            return ["sudo", "-u", user, *command]
+        if command_exists("su"):
+            return ["su", "-s", "/bin/sh", user, "-c", quote_shell_command(command)]
+    return ["sudo", "-u", user, *command]
+
+def prepare_run_command(command, command_exists=shutil.which, is_root=None):
+    if not command:
+        return command
+    if is_root is None:
+        is_root = is_root_user()
+    if command[0] == "sudo" and is_root:
+        if len(command) >= 4 and command[1] == "-u":
+            return command_as_user(command[2], command[3:], command_exists, is_root=True)
+        return command[1:]
+    return command
+
 def run_command(command, **kwargs):
-    if command and command[0] == "sudo" and hasattr(os, "geteuid") and os.geteuid() == 0:
-        command = command[1:]
+    command = prepare_run_command(command)
     try:
         return subprocess.run(command, check=False, **kwargs).returncode
     except FileNotFoundError:
@@ -1019,7 +1049,7 @@ def main_menu():
                 chown_runtime_files()
                 login_command = [venv_python, daemon_path, '--login']
                 if IS_INSTALLED and run_command(["id", "-u", SERVICE_USER], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL) == 0:
-                    login_command = ["sudo", "-u", SERVICE_USER, *login_command]
+                    login_command = command_as_user(SERVICE_USER, login_command)
                 login_result = run_command(login_command)
                 if login_result == 0:
                     backups_removed = remove_session_backups(session_backups)

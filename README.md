@@ -295,6 +295,7 @@ BIO_TEMPLATES = {
 - `temp` / `weather`：脚本已有天气缓存中的温度和天气 Emoji
 - `digit_style` / `letter_style` / `max_length`：数字字体、字母字体配置和 Telegram Bio 长度限制
 - `join(parts)`：过滤空值并用空格拼接
+- `letters(value)`：按当前字母字体转换模板生成的英文内容
 - `elapsed_en()`：返回默认英文年龄差文本
 
 `bio_custom_templates.py` 是可信 Python 代码，不做沙箱隔离。请不要在模板里执行网络请求、长时间 `sleep` 或重型任务；天气、温度和时区请直接读取 `ctx`。
@@ -352,10 +353,16 @@ DELETE
 
 ## 📝 更新日志
 
+### 🔡 v1.11.1
+
+- Bio 模板生成的英文内容现在会应用 `[9] 字母字体` 设置
+- 固定 Bio 和 Emoji 保持原样，不会被字母字体转换
+- 数字和字母字体映射改为共享模块，确保面板预览与后台输出一致
+
 ### 🔡 v1.11.0
 
 - 新增 `[9] 字母字体`，支持 `Aa / 𝗔𝗮 / 𝒜𝒶 / 𝓐𝓪 / 𝙰𝚊 / 𝔸𝕒`
-- Last Name 中的英文 A-Z/a-z 可按所选字体转换，Bio 和 Emoji 保持原样
+- Last Name 中的英文 A-Z/a-z 可按所选字体转换，Emoji 保持原样
 - 主菜单编号顺延并同步 README，避免选项显示和实际处理错位
 
 ### 🧩 v1.10.0

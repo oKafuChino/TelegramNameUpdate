@@ -19,12 +19,13 @@ import copy
 from datetime import date
 import bio_templates
 import bio_template_loader
+from bio_template_loader import DIGIT_STYLES, LETTER_STYLES, LETTER_STYLE_MAPS
 
 # ==========================================
 # 【版本定义】
 # 每次修改代码推送到 GitHub 前，请手动提升此版本号
 # ==========================================
-CURRENT_VERSION = "v1.11.0"
+CURRENT_VERSION = "v1.11.1"
 AUTHOR = "oKafuChino"
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -57,29 +58,6 @@ ORDER_LABELS = {
 }
 DEFAULT_CONFIG = {"show_time": True, "show_timezone": True, "show_date": False, "show_temp": True, "show_weather": True, "location": "Los Angeles", "digit_style": "sans_bold", "letter_style": "normal", "name_order": DEFAULT_NAME_ORDER.copy(), "last_name_mode": "classic", "last_name_rules": [], "last_name_default_items": [{"type": item} for item in DEFAULT_NAME_ORDER], "bio_enabled": False, "birth_date": "", "fixed_bio": "", "bio_template": "elapsed_en", "update_interval": 1, "emoji_schedules": []}
 BOOL_CONFIG_KEYS = ("show_time", "show_timezone", "show_date", "show_temp", "show_weather", "bio_enabled")
-DIGIT_STYLES = {
-    "normal": "1",
-    "sans_bold": "𝟭",
-    "serif_bold": "𝟏",
-    "double_struck": "𝟙",
-}
-LETTER_STYLES = {
-    "normal": "Aa",
-    "sans_bold": "𝗔𝗮",
-    "script": "𝒜𝒶",
-    "bold_script": "𝓐𝓪",
-    "monospace": "𝙰𝚊",
-    "double_struck": "𝔸𝕒",
-}
-LETTER_SOURCE = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
-LETTER_STYLE_MAPS = {
-    "normal": str.maketrans("", ""),
-    "sans_bold": str.maketrans(LETTER_SOURCE, "𝗔𝗕𝗖𝗗𝗘𝗙𝗚𝗛𝗜𝗝𝗞𝗟𝗠𝗡𝗢𝗣𝗤𝗥𝗦𝗧𝗨𝗩𝗪𝗫𝗬𝗭𝗮𝗯𝗰𝗱𝗲𝗳𝗴𝗵𝗶𝗷𝗸𝗹𝗺𝗻𝗼𝗽𝗾𝗿𝘀𝘁𝘂𝘃𝘄𝘅𝘆𝘇"),
-    "script": str.maketrans(LETTER_SOURCE, "𝒜ℬ𝒞𝒟ℰℱ𝒢ℋℐ𝒥𝒦ℒℳ𝒩𝒪𝒫𝒬ℛ𝒮𝒯𝒰𝒱𝒲𝒳𝒴𝒵𝒶𝒷𝒸𝒹ℯ𝒻ℊ𝒽𝒾𝒿𝓀𝓁𝓂𝓃ℴ𝓅𝓆𝓇𝓈𝓉𝓊𝓋𝓌𝓍𝓎𝓏"),
-    "bold_script": str.maketrans(LETTER_SOURCE, "𝓐𝓑𝓒𝓓𝓔𝓕𝓖𝓗𝓘𝓙𝓚𝓛𝓜𝓝𝓞𝓟𝓠𝓡𝓢𝓣𝓤𝓥𝓦𝓧𝓨𝓩𝓪𝓫𝓬𝓭𝓮𝓯𝓰𝓱𝓲𝓳𝓴𝓵𝓶𝓷𝓸𝓹𝓺𝓻𝓼𝓽𝓾𝓿𝔀𝔁𝔂𝔃"),
-    "monospace": str.maketrans(LETTER_SOURCE, "𝙰𝙱𝙲𝙳𝙴𝙵𝙶𝙷𝙸𝙹𝙺𝙻𝙼𝙽𝙾𝙿𝚀𝚁𝚂𝚃𝚄𝚅𝚆𝚇𝚈𝚉𝚊𝚋𝚌𝚍𝚎𝚏𝚐𝚑𝚒𝚓𝚔𝚕𝚖𝚗𝚘𝚙𝚚𝚛𝚜𝚝𝚞𝚟𝚠𝚡𝚢𝚣"),
-    "double_struck": str.maketrans(LETTER_SOURCE, "𝔸𝔹ℂ𝔻𝔼𝔽𝔾ℍ𝕀𝕁𝕂𝕃𝕄ℕ𝕆ℙℚℝ𝕊𝕋𝕌𝕍𝕎𝕏𝕐ℤ𝕒𝕓𝕔𝕕𝕖𝕗𝕘𝕙𝕚𝕛𝕜𝕝𝕞𝕟𝕠𝕡𝕢𝕣𝕤𝕥𝕦𝕧𝕨𝕩𝕪𝕫"),
-}
 UPDATE_INTERVALS = (1, 5, 15, 30, 60)
 MAX_LOCATION_LENGTH = 80
 MAX_BIO_LENGTH = 70

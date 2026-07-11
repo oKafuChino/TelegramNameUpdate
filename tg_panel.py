@@ -344,6 +344,17 @@ def build_bio_text(birth_date, fixed_bio, today=None, template_name="elapsed_en"
     except Exception:
         return bio_template_loader.render_bio("elapsed_en", ctx, DATA_DIR)
 
+def build_bio_text_strict(birth_date, fixed_bio, today=None, template_name="elapsed_en", config=None, local_time=None, weather_data=None):
+    ctx = build_bio_context(birth_date, fixed_bio, today, config, local_time, weather_data)
+    registry = bio_template_loader.load_templates(DATA_DIR)
+    entry = registry.entries.get(template_name)
+    if entry is None:
+        raise KeyError(f"Bio template {template_name!r} is not available")
+    value = entry.render(ctx)
+    if not isinstance(value, str):
+        raise TypeError(f"Bio template {template_name!r} must return str")
+    return value
+
 def sanitize_config(raw_config):
     config = copy.deepcopy(DEFAULT_CONFIG)
     if not isinstance(raw_config, dict):
@@ -800,16 +811,19 @@ def replace_remote_files(file_pairs):
     replaced = []
     for tmp_path, target_path in file_pairs:
         backup_path = f"{target_path}{backup_suffix}"
-        if run_command(["sudo", "cp", "-p", target_path, backup_path]) != 0:
-            cleanup_temp_files(*(backup for _, backup in backups))
-            return None
+        if os.path.exists(target_path):
+            if run_command(["sudo", "cp", "-p", target_path, backup_path]) != 0:
+                cleanup_temp_files(*(backup for _, backup in backups if backup))
+                return None
+        else:
+            backup_path = None
         backups.append((target_path, backup_path))
 
     for tmp_path, target_path in file_pairs:
         if replace_remote_file(tmp_path, target_path) != 0:
             restored = restore_remote_files(replaced)
             if restored:
-                cleanup_temp_files(*(backup for _, backup in backups))
+                cleanup_temp_files(*(backup for _, backup in backups if backup))
             cleanup_temp_files(*(tmp for tmp, _ in file_pairs))
             return None
         replaced.append((target_path, dict(backups)[target_path]))
@@ -819,7 +833,10 @@ def replace_remote_files(file_pairs):
 def restore_remote_files(backups):
     restored = True
     for target_path, backup_path in backups:
-        if run_command(["sudo", "cp", "-p", backup_path, target_path]) != 0:
+        if backup_path:
+            if run_command(["sudo", "cp", "-p", backup_path, target_path]) != 0:
+                restored = False
+        elif run_command(["sudo", "rm", "-f", target_path]) != 0:
             restored = False
     return restored
 
@@ -962,6 +979,18 @@ def render_bio_preview(config):
     )
 
 
+def render_bio_preview_strict(config):
+    birth_date = parse_birth_date(config.get("birth_date"))
+    if birth_date is None or not config.get("fixed_bio"):
+        return ""
+    return build_bio_text_strict(
+        birth_date,
+        config["fixed_bio"],
+        template_name=config.get("bio_template", "elapsed_en"),
+        config=config,
+    )
+
+
 def save_bio_config_or_pause(config, success_message):
     if save_config(config):
         input(success_message)
@@ -988,7 +1017,11 @@ def toggle_bio_enabled(config):
         input("❌ 请先设置出生日期和固定 Bio，按回车键继续...")
         return
 
-    preview = render_bio_preview(config)
+    try:
+        preview = render_bio_preview_strict(config)
+    except Exception as exc:
+        input(f"❌ Bio 模板渲染失败: {exc}。按回车键继续...")
+        return
     if not preview or len(preview) > MAX_BIO_LENGTH:
         input(f"❌ Bio 预览无效或超过 {MAX_BIO_LENGTH} 字符，按回车键继续...")
         return
@@ -1045,7 +1078,12 @@ def select_bio_template(config):
     selected = entries[int(raw_value) - 1]
     previous = config.get("bio_template", "elapsed_en")
     config["bio_template"] = selected.key
-    preview = render_bio_preview(config)
+    try:
+        preview = render_bio_preview_strict(config)
+    except Exception as exc:
+        config["bio_template"] = previous
+        input(f"❌ Bio 模板渲染失败: {exc}。按回车键继续...")
+        return
     if preview and len(preview) > MAX_BIO_LENGTH:
         config["bio_template"] = previous
         input(f"❌ 完整 Bio 长度为 {len(preview)}，超过 Telegram 的 {MAX_BIO_LENGTH} 字符限制。按回车键继续...")

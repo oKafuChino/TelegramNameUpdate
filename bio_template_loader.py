@@ -3,7 +3,7 @@
 import importlib.util
 import os
 from dataclasses import dataclass
-from typing import Callable
+from typing import Callable, Dict, List
 
 import bio_templates
 
@@ -23,8 +23,8 @@ class TemplateEntry:
 
 @dataclass(frozen=True)
 class TemplateRegistry:
-    entries: dict
-    errors: list
+    entries: Dict[str, TemplateEntry]
+    errors: List[str]
 
 
 def get_user_template_path(data_dir):

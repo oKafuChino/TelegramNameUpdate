@@ -1,8 +1,7 @@
-"""User-extensible Bio templates.
+"""Built-in Bio templates.
 
-Fork users can add a new function and register it in BIO_TEMPLATES.
-Each template receives a context dict with years, months, days,
-birth_date, today and fixed_bio.
+Fork users can still add templates here, but installed users should prefer
+/var/lib/tg_updater/bio_custom_templates.py so updates do not overwrite them.
 """
 
 
@@ -15,13 +14,15 @@ def elapsed_en(ctx):
 
 
 BIO_TEMPLATES = {
-    "elapsed_en": elapsed_en,
+    "elapsed_en": {
+        "name": "It lasted...",
+        "description": "Default English elapsed time plus fixed Bio",
+        "render": elapsed_en,
+    },
 }
 
 
 def render_bio(template_name, ctx):
-    template = BIO_TEMPLATES.get(template_name) or BIO_TEMPLATES["elapsed_en"]
-    value = template(ctx)
-    if not isinstance(value, str):
-        raise TypeError(f"Bio template {template_name!r} must return str")
-    return value
+    import bio_template_loader
+
+    return bio_template_loader.render_bio(template_name, ctx)

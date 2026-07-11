@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
 import os
@@ -18,12 +18,13 @@ import shlex
 import copy
 from datetime import date
 import bio_templates
+import bio_template_loader
 
 # ==========================================
 # 【版本定义】
 # 每次修改代码推送到 GitHub 前，请手动提升此版本号
 # ==========================================
-CURRENT_VERSION = "v1.9.0"
+CURRENT_VERSION = "v1.10.0"
 AUTHOR = "oKafuChino"
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -294,23 +295,54 @@ def calculate_elapsed(birth_date, today=None):
     checkpoint = add_months(anniversary, months)
     return years, months, (today - checkpoint).days
 
-def build_bio_context(birth_date, fixed_bio, today=None):
+def get_utc_offset_text(local_time):
+    offset_seconds = getattr(local_time, "tm_gmtoff", None)
+    if offset_seconds is None:
+        offset_seconds = time.mktime(local_time) - time.mktime(time.gmtime(time.mktime(local_time)))
+
+    sign = "+" if offset_seconds >= 0 else "-"
+    offset_seconds = abs(int(offset_seconds))
+    hours, remainder = divmod(offset_seconds, 3600)
+    minutes = remainder // 60
+    if minutes:
+        return f"UTC{sign}{hours}:{minutes:02d}"
+    return f"UTC{sign}{hours}"
+
+def join_non_empty(parts):
+    return " ".join(str(part) for part in parts if part)
+
+def build_bio_context(birth_date, fixed_bio, today=None, config=None, local_time=None, weather_data=None):
     years, months, days = calculate_elapsed(birth_date, today)
     today = today or date.today()
-    return {
+    local_time = local_time or time.localtime()
+    config = config or DEFAULT_CONFIG
+    weather_data = weather_data or {"temp": "", "emoji": ""}
+    ctx = {
         "years": years,
         "months": months,
         "days": days,
         "birth_date": birth_date,
         "today": today,
         "fixed_bio": fixed_bio,
+        "time": time.strftime("%H:%M", local_time),
+        "timezone": get_utc_offset_text(local_time),
+        "date": time.strftime("%m-%d", local_time),
+        "location": config.get("location", ""),
+        "temp": weather_data.get("temp", ""),
+        "weather": weather_data.get("emoji", ""),
+        "digit_style": config.get("digit_style", "sans_bold"),
+        "max_length": MAX_BIO_LENGTH,
     }
+    ctx["join"] = join_non_empty
+    ctx["elapsed_en"] = lambda: bio_templates.elapsed_en(ctx)
+    return ctx
 
-def build_bio_text(birth_date, fixed_bio, today=None, template_name="elapsed_en"):
+def build_bio_text(birth_date, fixed_bio, today=None, template_name="elapsed_en", config=None, local_time=None, weather_data=None):
+    ctx = build_bio_context(birth_date, fixed_bio, today, config, local_time, weather_data)
     try:
-        return bio_templates.render_bio(template_name, build_bio_context(birth_date, fixed_bio, today))
+        return bio_template_loader.render_bio(template_name, ctx, DATA_DIR)
     except Exception:
-        return bio_templates.render_bio("elapsed_en", build_bio_context(birth_date, fixed_bio, today))
+        return bio_template_loader.render_bio("elapsed_en", ctx, DATA_DIR)
 
 def sanitize_config(raw_config):
     config = copy.deepcopy(DEFAULT_CONFIG)
@@ -350,12 +382,12 @@ def sanitize_config(raw_config):
         config["fixed_bio"] = "".join(char for char in fixed_bio.strip() if char.isprintable())[:MAX_BIO_LENGTH]
 
     bio_template = raw_config.get("bio_template")
-    if isinstance(bio_template, str) and bio_template in bio_templates.BIO_TEMPLATES:
+    if bio_template_loader.template_exists(bio_template, DATA_DIR):
         config["bio_template"] = bio_template
 
     if not config["birth_date"] or not config["fixed_bio"]:
         config["bio_enabled"] = False
-    elif len(build_bio_text(birth_date, config["fixed_bio"], template_name=config["bio_template"])) > MAX_BIO_LENGTH:
+    elif len(build_bio_text(birth_date, config["fixed_bio"], template_name=config["bio_template"], config=config)) > MAX_BIO_LENGTH:
         config["bio_enabled"] = False
 
     update_interval = raw_config.get("update_interval")
@@ -553,7 +585,7 @@ def harden_code_files():
 
     success = run_command(["sudo", "chown", "root:root", BASE_DIR]) == 0
     success = run_command(["sudo", "chmod", "755", BASE_DIR]) == 0 and success
-    for filename in ("tg_panel.py", "tg_daemon.py", "bio_templates.py", "requirements.txt"):
+    for filename in ("tg_panel.py", "tg_daemon.py", "bio_templates.py", "bio_template_loader.py", "requirements.txt"):
         path = os.path.join(BASE_DIR, filename)
         if os.path.isfile(path) and not os.path.islink(path):
             mode = "755" if filename.endswith(".py") else "644"
@@ -912,84 +944,167 @@ def configure_name_order(config):
     else:
         input("按回车键返回主菜单...")
 
-def configure_bio(config):
-    if config.get("bio_enabled"):
-        config["bio_enabled"] = False
-        if save_config(config):
-            input("✅ Bio 自动更新已关闭，按回车键返回主菜单...")
-        else:
-            input("按回车键返回主菜单...")
-        return
+def get_bio_template_label(template_key):
+    registry = bio_template_loader.load_templates(DATA_DIR)
+    entry = registry.entries.get(template_key)
+    return entry.name if entry else template_key
 
-    print("\n开启后，每天 03:00 自动更新 Bio。")
-    print("Bio 更新成功后会跳过下一次自动 Last Name 更新，避免同一分钟连续修改资料。")
-    current_birth_date = config.get("birth_date", "")
-    birth_prompt = f"出生日期 YYYY-MM-DD [{current_birth_date}]: " if current_birth_date else "出生日期 YYYY-MM-DD: "
-    raw_birth_date = input(birth_prompt).strip() or current_birth_date
-    birth_date = parse_birth_date(raw_birth_date)
-    if birth_date is None:
-        input("❌ 出生日期无效或晚于今天，按回车键返回主菜单...")
-        return
 
-    current_fixed_bio = config.get("fixed_bio", "")
-    bio_prompt = f"固定 Bio [{current_fixed_bio}]: " if current_fixed_bio else "固定 Bio: "
-    fixed_bio = input(bio_prompt).strip() or current_fixed_bio
-    fixed_bio = "".join(char for char in fixed_bio if char.isprintable())
-    if not fixed_bio:
-        input("❌ 固定 Bio 不能为空，按回车键返回主菜单...")
-        return
+def render_bio_preview(config):
+    birth_date = parse_birth_date(config.get("birth_date"))
+    if birth_date is None or not config.get("fixed_bio"):
+        return ""
+    return build_bio_text(
+        birth_date,
+        config["fixed_bio"],
+        template_name=config.get("bio_template", "elapsed_en"),
+        config=config,
+    )
 
-    template_keys = list(bio_templates.BIO_TEMPLATES)
-    current_template = config.get("bio_template", "elapsed_en")
-    print("\n可选 Bio 模板:")
-    for index, key in enumerate(template_keys, 1):
-        marker = " (当前)" if key == current_template else ""
-        print(f"  {index}. {key}{marker}")
-    raw_template = input("请选择 Bio 模板 (直接回车使用当前): ").strip()
-    if raw_template:
-        if not raw_template.isdigit() or not 1 <= int(raw_template) <= len(template_keys):
-            input("❌ Bio 模板选项无效，按回车键返回主菜单...")
-            return
-        bio_template = template_keys[int(raw_template) - 1]
+
+def save_bio_config_or_pause(config, success_message):
+    if save_config(config):
+        input(success_message)
     else:
-        bio_template = current_template if current_template in bio_templates.BIO_TEMPLATES else "elapsed_en"
+        input("按回车键继续...")
 
-    preview = build_bio_text(birth_date, fixed_bio, template_name=bio_template)
-    if len(preview) > MAX_BIO_LENGTH:
-        input(f"❌ 完整 Bio 长度为 {len(preview)}，超过 Telegram 的 {MAX_BIO_LENGTH} 字符限制。请缩短固定 Bio。按回车键返回主菜单...")
-        return
 
-    config.update({
-        "bio_enabled": True,
-        "birth_date": birth_date.isoformat(),
-        "fixed_bio": fixed_bio,
-        "bio_template": bio_template,
-    })
-    bio_state_backup = None
+def reset_bio_state_for_new_config():
     try:
         if os.path.lexists(BIO_STATE_FILE):
-            bio_state_backup = f"{BIO_STATE_FILE}.bak.{os.getpid()}.{secrets.token_hex(4)}"
-            os.replace(BIO_STATE_FILE, bio_state_backup)
-    except FileNotFoundError:
-        pass
-    except OSError as e:
-        input(f"❌ Bio 状态准备失败: {e}。按回车键返回主菜单...")
+            os.unlink(BIO_STATE_FILE)
+    except OSError as exc:
+        print(color(f"⚠️ Bio 状态重置失败: {exc}", "yellow"))
+
+
+def toggle_bio_enabled(config):
+    if config.get("bio_enabled"):
+        config["bio_enabled"] = False
+        save_bio_config_or_pause(config, "✅ Bio 自动更新已关闭，按回车键继续...")
         return
-    if save_config(config):
-        if bio_state_backup:
-            try:
-                os.unlink(bio_state_backup)
-            except OSError:
-                print("⚠️ 旧 Bio 状态备份清理失败，不影响新配置运行。")
-        print(f"\nBio 预览: {preview}")
-        input("✅ Bio 自动更新已开启，按回车键返回主菜单...")
-    else:
-        if bio_state_backup:
-            try:
-                os.replace(bio_state_backup, BIO_STATE_FILE)
-            except OSError:
-                print("⚠️ 配置保存和 Bio 状态恢复均失败，请检查数据目录权限。")
-        input("按回车键返回主菜单...")
+
+    birth_date = parse_birth_date(config.get("birth_date"))
+    if birth_date is None or not config.get("fixed_bio"):
+        input("❌ 请先设置出生日期和固定 Bio，按回车键继续...")
+        return
+
+    preview = render_bio_preview(config)
+    if not preview or len(preview) > MAX_BIO_LENGTH:
+        input(f"❌ Bio 预览无效或超过 {MAX_BIO_LENGTH} 字符，按回车键继续...")
+        return
+
+    config["bio_enabled"] = True
+    reset_bio_state_for_new_config()
+    save_bio_config_or_pause(config, "✅ Bio 自动更新已开启，按回车键继续...")
+
+
+def set_bio_birth_date(config):
+    current = config.get("birth_date", "")
+    raw_value = input(f"出生日期 YYYY-MM-DD [{current}]: ").strip() or current
+    birth_date = parse_birth_date(raw_value)
+    if birth_date is None:
+        input("❌ 出生日期无效或晚于今天，按回车键继续...")
+        return
+    config["birth_date"] = birth_date.isoformat()
+    config["bio_enabled"] = False
+    save_bio_config_or_pause(config, "✅ 出生日期已保存，Bio 已暂时关闭，请确认预览后重新开启。按回车键继续...")
+
+
+def set_bio_fixed_text(config):
+    current = config.get("fixed_bio", "")
+    value = input(f"固定 Bio [{current}]: ").strip() or current
+    value = "".join(char for char in value if char.isprintable())
+    if not value:
+        input("❌ 固定 Bio 不能为空，按回车键继续...")
+        return
+    config["fixed_bio"] = value[:MAX_BIO_LENGTH]
+    config["bio_enabled"] = False
+    save_bio_config_or_pause(config, "✅ 固定 Bio 已保存，Bio 已暂时关闭，请确认预览后重新开启。按回车键继续...")
+
+
+def select_bio_template(config):
+    registry = bio_template_loader.load_templates(DATA_DIR)
+    entries = list(registry.entries.values())
+    if not entries:
+        input("❌ 没有可用 Bio 模板，按回车键继续...")
+        return
+
+    print("\n可用 Bio 模板:")
+    for index, entry in enumerate(entries, 1):
+        marker = " (当前)" if entry.key == config.get("bio_template") else ""
+        description = f"  {entry.description}" if entry.description else ""
+        print(f"[{index}] {entry.name}  {entry.source}{description}{marker}")
+
+    raw_value = input("请选择模板编号 ([0] 返回): ").strip()
+    if raw_value == "0":
+        return
+    if not raw_value.isdigit() or not 1 <= int(raw_value) <= len(entries):
+        input("❌ Bio 模板选项无效，按回车键继续...")
+        return
+
+    selected = entries[int(raw_value) - 1]
+    previous = config.get("bio_template", "elapsed_en")
+    config["bio_template"] = selected.key
+    preview = render_bio_preview(config)
+    if preview and len(preview) > MAX_BIO_LENGTH:
+        config["bio_template"] = previous
+        input(f"❌ 完整 Bio 长度为 {len(preview)}，超过 Telegram 的 {MAX_BIO_LENGTH} 字符限制。按回车键继续...")
+        return
+    config["bio_enabled"] = False
+    save_bio_config_or_pause(config, "✅ Bio 模板已保存，Bio 已暂时关闭，请确认预览后重新开启。按回车键继续...")
+
+
+def preview_current_bio(config):
+    preview = render_bio_preview(config)
+    if not preview:
+        input("❌ 请先设置出生日期和固定 Bio，按回车键继续...")
+        return
+    input(f"Bio 预览: {preview}\n长度: {len(preview)}/{MAX_BIO_LENGTH}\n按回车键继续...")
+
+
+def show_bio_template_path():
+    input(f"用户模板文件:\n{bio_template_loader.get_user_template_path(DATA_DIR)}\n按回车键继续...")
+
+
+def configure_bio(config):
+    while True:
+        print("\n" + color("Bio 自动更新", "cyan", "bold"))
+        print(f"当前状态: {state_text(config.get('bio_enabled', False))}")
+        print(f"当前模板: {safe_display(get_bio_template_label(config.get('bio_template', 'elapsed_en')))}")
+        print(f"出生日期: {safe_display(config.get('birth_date') or '未设置')}")
+        print(f"固定 Bio: {safe_display(config.get('fixed_bio') or '未设置')}")
+        preview = render_bio_preview(config)
+        if preview:
+            print(f"今日预览: {safe_display(preview)}")
+        registry = bio_template_loader.load_templates(DATA_DIR)
+        for error in registry.errors:
+            print(color(f"模板提示: {error}", "yellow"))
+
+        print("\n[1] 开启 / 关闭 Bio 自动更新")
+        print("[2] 设置出生日期")
+        print("[3] 设置固定 Bio")
+        print("[4] 选择 Bio 模板")
+        print("[5] 预览当前 Bio")
+        print("[6] 查看用户模板文件路径")
+        print("[0] 返回主菜单")
+        choice = input("请选择: ").strip()
+
+        if choice == "1":
+            toggle_bio_enabled(config)
+        elif choice == "2":
+            set_bio_birth_date(config)
+        elif choice == "3":
+            set_bio_fixed_text(config)
+        elif choice == "4":
+            select_bio_template(config)
+        elif choice == "5":
+            preview_current_bio(config)
+        elif choice == "6":
+            show_bio_template_path()
+        elif choice == "0":
+            return
+        else:
+            input("❌ 无效选项，按回车键继续...")
 
 def configure_update_interval(config):
     print(f"\n当前 Last Name 更新频率: 每 {config['update_interval']} 分钟")
@@ -1426,32 +1541,35 @@ def main_menu():
             daemon_target = "/opt/tg_updater/tg_daemon.py"
             panel_target = "/opt/tg_updater/tg_panel.py"
             bio_templates_target = "/opt/tg_updater/bio_templates.py"
+            bio_template_loader_target = "/opt/tg_updater/bio_template_loader.py"
             requirements_target = "/opt/tg_updater/requirements.txt"
             res1, daemon_tmp = download_remote_file("tg_daemon.py", daemon_target)
             res2, panel_tmp = download_remote_file("tg_panel.py", panel_target)
             res3, bio_templates_tmp = download_remote_file("bio_templates.py", bio_templates_target)
-            res4, requirements_tmp = download_remote_file("requirements.txt", requirements_target)
+            res4, bio_template_loader_tmp = download_remote_file("bio_template_loader.py", bio_template_loader_target)
+            res5, requirements_tmp = download_remote_file("requirements.txt", requirements_target)
             
-            if res1 == 0 and res2 == 0 and res3 == 0 and res4 == 0:
+            if res1 == 0 and res2 == 0 and res3 == 0 and res4 == 0 and res5 == 0:
                 daemon_valid = validate_python_file(daemon_tmp, ("main", "change_name_auto"))
                 panel_valid = validate_python_file(panel_tmp, ("CURRENT_VERSION", "main_menu"))
                 bio_templates_valid = validate_python_file(bio_templates_tmp, ("BIO_TEMPLATES", "render_bio"))
+                bio_template_loader_valid = validate_python_file(bio_template_loader_tmp, ("load_templates", "render_bio"))
                 requirements_valid = validate_requirements_file(requirements_tmp)
-                if not daemon_valid or not panel_valid or not bio_templates_valid or not requirements_valid:
-                    cleanup_temp_files(daemon_tmp, panel_tmp, bio_templates_tmp, requirements_tmp)
+                if not daemon_valid or not panel_valid or not bio_templates_valid or not bio_template_loader_valid or not requirements_valid:
+                    cleanup_temp_files(daemon_tmp, panel_tmp, bio_templates_tmp, bio_template_loader_tmp, requirements_tmp)
                     print("\n❌ 更新失败！下载文件未通过语法或依赖格式校验，已取消覆盖。")
                     input("按回车键返回主菜单...")
                     continue
 
                 downloaded_version = extract_version_from_file(panel_tmp)
                 if downloaded_version is None or parse_version(downloaded_version) is None:
-                    cleanup_temp_files(daemon_tmp, panel_tmp, bio_templates_tmp, requirements_tmp)
+                    cleanup_temp_files(daemon_tmp, panel_tmp, bio_templates_tmp, bio_template_loader_tmp, requirements_tmp)
                     print("\n❌ 更新失败！下载到的面板脚本版本号缺失或格式无效，已取消覆盖。")
                     input("按回车键返回主菜单...")
                     continue
                 downloaded_compare = compare_versions(downloaded_version, CURRENT_VERSION)
                 if downloaded_compare is not None and downloaded_compare < 0:
-                    cleanup_temp_files(daemon_tmp, panel_tmp, bio_templates_tmp, requirements_tmp)
+                    cleanup_temp_files(daemon_tmp, panel_tmp, bio_templates_tmp, bio_template_loader_tmp, requirements_tmp)
                     print(f"\n❌ 已取消更新：下载到的版本是 {downloaded_version}，低于当前版本 {CURRENT_VERSION}。")
                     print("请确认 GitHub main 分支已经推送最新代码，或等待 raw.githubusercontent.com 缓存刷新。")
                     input("按回车键返回主菜单...")
@@ -1471,6 +1589,7 @@ def main_menu():
                     (daemon_tmp, daemon_target),
                     (panel_tmp, panel_target),
                     (bio_templates_tmp, bio_templates_target),
+                    (bio_template_loader_tmp, bio_template_loader_target),
                     (requirements_tmp, requirements_target),
                 ))
                 if backups is not None:
@@ -1506,10 +1625,10 @@ def main_menu():
                             print("❌ 更新和自动恢复均失败，备份文件已保留在 /opt/tg_updater，请勿继续更新并检查磁盘与权限。")
                     print("⚠️ 提示：当前面板仍是内存中的旧界面，请输入 [0] 退出后重新运行 'tg'。")
                 else:
-                    cleanup_temp_files(daemon_tmp, panel_tmp, bio_templates_tmp, requirements_tmp)
+                    cleanup_temp_files(daemon_tmp, panel_tmp, bio_templates_tmp, bio_template_loader_tmp, requirements_tmp)
                     print("\n❌ 更新失败！文件替换失败，已尝试恢复旧版本，请检查 /opt/tg_updater 权限。")
             else:
-                cleanup_temp_files(daemon_tmp, panel_tmp, bio_templates_tmp, requirements_tmp)
+                cleanup_temp_files(daemon_tmp, panel_tmp, bio_templates_tmp, bio_template_loader_tmp, requirements_tmp)
                 print("\n❌ 更新失败！请检查 VPS 网络连接或 GitHub 仓库地址是否正确。")
             input("按回车键返回主菜单...")
             

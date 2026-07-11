@@ -95,10 +95,11 @@ download_file() {
 download_file "$REPO_URL/tg_daemon.py" "$TMP_DIR/tg_daemon.py"
 download_file "$REPO_URL/tg_panel.py" "$TMP_DIR/tg_panel.py"
 download_file "$REPO_URL/bio_templates.py" "$TMP_DIR/bio_templates.py"
+download_file "$REPO_URL/bio_template_loader.py" "$TMP_DIR/bio_template_loader.py"
 download_file "$REPO_URL/requirements.txt" "$TMP_DIR/requirements.txt"
 
 python3 -c 'import ast, pathlib, sys
-required = {"tg_daemon.py": {"main", "change_name_auto"}, "tg_panel.py": {"CURRENT_VERSION", "main_menu"}, "bio_templates.py": {"BIO_TEMPLATES", "render_bio"}}
+required = {"tg_daemon.py": {"main", "change_name_auto"}, "tg_panel.py": {"CURRENT_VERSION", "main_menu"}, "bio_templates.py": {"BIO_TEMPLATES", "render_bio"}, "bio_template_loader.py": {"load_templates", "render_bio"}}
 for path in sys.argv[1:]:
     tree = ast.parse(pathlib.Path(path).read_text(encoding="utf-8"), filename=path)
     symbols = {node.name for node in tree.body if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))}
@@ -108,11 +109,12 @@ for path in sys.argv[1:]:
     missing = required[pathlib.Path(path).name] - symbols
     if missing:
         raise SystemExit(f"missing required symbols in {path}: {sorted(missing)}")' \
-    "$TMP_DIR/tg_daemon.py" "$TMP_DIR/tg_panel.py" "$TMP_DIR/bio_templates.py"
+    "$TMP_DIR/tg_daemon.py" "$TMP_DIR/tg_panel.py" "$TMP_DIR/bio_templates.py" "$TMP_DIR/bio_template_loader.py"
 
 DAEMON_EXISTED=false
 PANEL_EXISTED=false
 BIO_TEMPLATES_EXISTED=false
+BIO_TEMPLATE_LOADER_EXISTED=false
 REQUIREMENTS_EXISTED=false
 UNIT_EXISTED=false
 if $SUDO test -f "$PROJECT_DIR/tg_daemon.py"; then
@@ -126,6 +128,10 @@ fi
 if $SUDO test -f "$PROJECT_DIR/bio_templates.py"; then
     $SUDO cp -p "$PROJECT_DIR/bio_templates.py" "$TMP_DIR/bio_templates.py.backup"
     BIO_TEMPLATES_EXISTED=true
+fi
+if $SUDO test -f "$PROJECT_DIR/bio_template_loader.py"; then
+    $SUDO cp -p "$PROJECT_DIR/bio_template_loader.py" "$TMP_DIR/bio_template_loader.py.backup"
+    BIO_TEMPLATE_LOADER_EXISTED=true
 fi
 if $SUDO test -f "$PROJECT_DIR/requirements.txt"; then
     $SUDO cp -p "$PROJECT_DIR/requirements.txt" "$TMP_DIR/requirements.txt.backup"
@@ -143,6 +149,7 @@ restore_previous_install() {
     if $DAEMON_EXISTED; then $SUDO install -m 755 "$TMP_DIR/tg_daemon.py.backup" "$PROJECT_DIR/tg_daemon.py"; else $SUDO rm -f "$PROJECT_DIR/tg_daemon.py"; fi
     if $PANEL_EXISTED; then $SUDO install -m 755 "$TMP_DIR/tg_panel.py.backup" "$PROJECT_DIR/tg_panel.py"; else $SUDO rm -f "$PROJECT_DIR/tg_panel.py"; fi
     if $BIO_TEMPLATES_EXISTED; then $SUDO install -m 644 "$TMP_DIR/bio_templates.py.backup" "$PROJECT_DIR/bio_templates.py"; else $SUDO rm -f "$PROJECT_DIR/bio_templates.py"; fi
+    if $BIO_TEMPLATE_LOADER_EXISTED; then $SUDO install -m 644 "$TMP_DIR/bio_template_loader.py.backup" "$PROJECT_DIR/bio_template_loader.py"; else $SUDO rm -f "$PROJECT_DIR/bio_template_loader.py"; fi
     if $REQUIREMENTS_EXISTED; then
         $SUDO install -m 644 "$TMP_DIR/requirements.txt.backup" "$PROJECT_DIR/requirements.txt"
         $SUDO "$PROJECT_DIR/venv/bin/pip" install --no-cache-dir --no-compile -r "$PROJECT_DIR/requirements.txt"
@@ -182,6 +189,7 @@ $SUDO "$PROJECT_DIR/venv/bin/pip" install --no-cache-dir --no-compile -r "$TMP_D
 if ! $SUDO install -m 755 "$TMP_DIR/tg_daemon.py" "$PROJECT_DIR/tg_daemon.py" || \
    ! $SUDO install -m 755 "$TMP_DIR/tg_panel.py" "$PROJECT_DIR/tg_panel.py" || \
    ! $SUDO install -m 644 "$TMP_DIR/bio_templates.py" "$PROJECT_DIR/bio_templates.py" || \
+   ! $SUDO install -m 644 "$TMP_DIR/bio_template_loader.py" "$PROJECT_DIR/bio_template_loader.py" || \
    ! $SUDO install -m 644 "$TMP_DIR/requirements.txt" "$PROJECT_DIR/requirements.txt"; then
     echo ">> 核心文件安装失败，正在恢复旧版本..."
     restore_previous_install

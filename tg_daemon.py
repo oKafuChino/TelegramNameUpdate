@@ -20,6 +20,7 @@ from telethon import TelegramClient
 from telethon.errors import FloodWaitError
 from telethon.tl.functions.account import UpdateProfileRequest
 import bio_templates
+import bio_template_loader
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 IS_INSTALLED = BASE_DIR == "/opt/tg_updater"
@@ -250,24 +251,42 @@ def calculate_elapsed(birth_date, today=None):
     checkpoint = add_months(anniversary, months)
     return years, months, (today - checkpoint).days
 
-def build_bio_context(birth_date, fixed_bio, today=None):
+def join_non_empty(parts):
+    return " ".join(str(part) for part in parts if part)
+
+def build_bio_context(birth_date, fixed_bio, today=None, config=None, local_time=None, weather_data=None):
     years, months, days = calculate_elapsed(birth_date, today)
     today = today or date.today()
-    return {
+    local_time = local_time or time.localtime()
+    config = config or DEFAULT_CONFIG
+    weather_data = weather_data or {"temp": "", "emoji": ""}
+    ctx = {
         "years": years,
         "months": months,
         "days": days,
         "birth_date": birth_date,
         "today": today,
         "fixed_bio": fixed_bio,
+        "time": time.strftime("%H:%M", local_time),
+        "timezone": get_utc_offset_text(local_time),
+        "date": time.strftime("%m-%d", local_time),
+        "location": config.get("location", ""),
+        "temp": weather_data.get("temp", ""),
+        "weather": weather_data.get("emoji", ""),
+        "digit_style": config.get("digit_style", "sans_bold"),
+        "max_length": MAX_BIO_LENGTH,
     }
+    ctx["join"] = join_non_empty
+    ctx["elapsed_en"] = lambda: bio_templates.elapsed_en(ctx)
+    return ctx
 
-def build_bio_text(birth_date, fixed_bio, today=None, template_name="elapsed_en"):
+def build_bio_text(birth_date, fixed_bio, today=None, template_name="elapsed_en", config=None, local_time=None, weather_data=None):
+    ctx = build_bio_context(birth_date, fixed_bio, today, config, local_time, weather_data)
     try:
-        return bio_templates.render_bio(template_name, build_bio_context(birth_date, fixed_bio, today))
+        return bio_template_loader.render_bio(template_name, ctx, DATA_DIR)
     except Exception:
         logger.warning("Bio template %s failed; using elapsed_en", template_name, exc_info=True)
-        return bio_templates.render_bio("elapsed_en", build_bio_context(birth_date, fixed_bio, today))
+        return bio_template_loader.render_bio("elapsed_en", ctx, DATA_DIR)
 
 def sanitize_config(raw_config):
     config = copy.deepcopy(DEFAULT_CONFIG)
@@ -307,12 +326,12 @@ def sanitize_config(raw_config):
         config["fixed_bio"] = "".join(char for char in fixed_bio.strip() if char.isprintable())[:MAX_BIO_LENGTH]
 
     bio_template = raw_config.get("bio_template")
-    if isinstance(bio_template, str) and bio_template in bio_templates.BIO_TEMPLATES:
+    if bio_template_loader.template_exists(bio_template, DATA_DIR):
         config["bio_template"] = bio_template
 
     if not config["birth_date"] or not config["fixed_bio"]:
         config["bio_enabled"] = False
-    elif len(build_bio_text(birth_date, config["fixed_bio"], template_name=config["bio_template"])) > MAX_BIO_LENGTH:
+    elif len(build_bio_text(birth_date, config["fixed_bio"], template_name=config["bio_template"], config=config)) > MAX_BIO_LENGTH:
         config["bio_enabled"] = False
 
     update_interval = raw_config.get("update_interval")
@@ -712,7 +731,15 @@ async def update_bio_once(client, update_lock, config, today, last_updated_date,
     if not config['bio_enabled'] or birth_date is None or not should_update:
         return last_updated_date, False
 
-    bio_text = build_bio_text(birth_date, config['fixed_bio'], today, config["bio_template"])
+    bio_text = build_bio_text(
+        birth_date,
+        config['fixed_bio'],
+        today,
+        config["bio_template"],
+        config=config,
+        local_time=time.localtime(),
+        weather_data=current_weather_data,
+    )
     if len(bio_text) > MAX_BIO_LENGTH:
         logger.error("Bio is too long: %s/%s characters", len(bio_text), MAX_BIO_LENGTH)
         return last_updated_date, False

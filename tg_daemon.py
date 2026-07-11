@@ -45,6 +45,15 @@ DIGIT_STYLE_MAPS = {
     "serif_bold": str.maketrans("0123456789", "𝟎𝟏𝟐𝟑𝟒𝟓𝟔𝟕𝟖𝟗"),
     "double_struck": str.maketrans("0123456789", "𝟘𝟙𝟚𝟛𝟜𝟝𝟞𝟟𝟠𝟡"),
 }
+LETTER_SOURCE = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
+LETTER_STYLE_MAPS = {
+    "normal": str.maketrans("", ""),
+    "sans_bold": str.maketrans(LETTER_SOURCE, "𝗔𝗕𝗖𝗗𝗘𝗙𝗚𝗛𝗜𝗝𝗞𝗟𝗠𝗡𝗢𝗣𝗤𝗥𝗦𝗧𝗨𝗩𝗪𝗫𝗬𝗭𝗮𝗯𝗰𝗱𝗲𝗳𝗴𝗵𝗶𝗷𝗸𝗹𝗺𝗻𝗼𝗽𝗾𝗿𝘀𝘁𝘂𝘃𝘄𝘅𝘆𝘇"),
+    "script": str.maketrans(LETTER_SOURCE, "𝒜ℬ𝒞𝒟ℰℱ𝒢ℋℐ𝒥𝒦ℒℳ𝒩𝒪𝒫𝒬ℛ𝒮𝒯𝒰𝒱𝒲𝒳𝒴𝒵𝒶𝒷𝒸𝒹ℯ𝒻ℊ𝒽𝒾𝒿𝓀𝓁𝓂𝓃ℴ𝓅𝓆𝓇𝓈𝓉𝓊𝓋𝓌𝓍𝓎𝓏"),
+    "bold_script": str.maketrans(LETTER_SOURCE, "𝓐𝓑𝓒𝓓𝓔𝓕𝓖𝓗𝓘𝓙𝓚𝓛𝓜𝓝𝓞𝓟𝓠𝓡𝓢𝓣𝓤𝓥𝓦𝓧𝓨𝓩𝓪𝓫𝓬𝓭𝓮𝓯𝓰𝓱𝓲𝓳𝓴𝓵𝓶𝓷𝓸𝓹𝓺𝓻𝓼𝓽𝓾𝓿𝔀𝔁𝔂𝔃"),
+    "monospace": str.maketrans(LETTER_SOURCE, "𝙰𝙱𝙲𝙳𝙴𝙵𝙶𝙷𝙸𝙹𝙺𝙻𝙼𝙽𝙾𝙿𝚀𝚁𝚂𝚃𝚄𝚅𝚆𝚇𝚈𝚉𝚊𝚋𝚌𝚍𝚎𝚏𝚐𝚑𝚒𝚓𝚔𝚕𝚖𝚗𝚘𝚙𝚚𝚛𝚜𝚝𝚞𝚟𝚠𝚡𝚢𝚣"),
+    "double_struck": str.maketrans(LETTER_SOURCE, "𝔸𝔹ℂ𝔻𝔼𝔽𝔾ℍ𝕀𝕁𝕂𝕃𝕄ℕ𝕆ℙℚℝ𝕊𝕋𝕌𝕍𝕎𝕏𝕐ℤ𝕒𝕓𝕔𝕕𝕖𝕗𝕘𝕙𝕚𝕛𝕜𝕝𝕞𝕟𝕠𝕡𝕢𝕣𝕤𝕥𝕦𝕧𝕨𝕩𝕪𝕫"),
+}
 current_weather_data = {"temp": "", "emoji": ""}
 DEFAULT_NAME_ORDER = ["time", "timezone", "date", "temp", "weather", "emoji"]
 LAST_NAME_FIELD_TYPES = DEFAULT_NAME_ORDER.copy()
@@ -58,7 +67,7 @@ ORDER_LABELS = {
     "emoji": "Emoji",
     "text": "自定义文本",
 }
-DEFAULT_CONFIG = {"show_time": True, "show_timezone": True, "show_date": False, "show_temp": True, "show_weather": True, "location": "Los Angeles", "digit_style": "sans_bold", "name_order": DEFAULT_NAME_ORDER.copy(), "last_name_mode": "classic", "last_name_rules": [], "last_name_default_items": [{"type": item} for item in DEFAULT_NAME_ORDER], "bio_enabled": False, "birth_date": "", "fixed_bio": "", "bio_template": "elapsed_en", "update_interval": 1, "emoji_schedules": []}
+DEFAULT_CONFIG = {"show_time": True, "show_timezone": True, "show_date": False, "show_temp": True, "show_weather": True, "location": "Los Angeles", "digit_style": "sans_bold", "letter_style": "normal", "name_order": DEFAULT_NAME_ORDER.copy(), "last_name_mode": "classic", "last_name_rules": [], "last_name_default_items": [{"type": item} for item in DEFAULT_NAME_ORDER], "bio_enabled": False, "birth_date": "", "fixed_bio": "", "bio_template": "elapsed_en", "update_interval": 1, "emoji_schedules": []}
 BOOL_CONFIG_KEYS = ("show_time", "show_timezone", "show_date", "show_temp", "show_weather", "bio_enabled")
 UPDATE_INTERVALS = (1, 5, 15, 30, 60)
 MAX_LOCATION_LENGTH = 80
@@ -274,6 +283,7 @@ def build_bio_context(birth_date, fixed_bio, today=None, config=None, local_time
         "temp": weather_data.get("temp", ""),
         "weather": weather_data.get("emoji", ""),
         "digit_style": config.get("digit_style", "sans_bold"),
+        "letter_style": config.get("letter_style", "normal"),
         "max_length": MAX_BIO_LENGTH,
     }
     ctx["join"] = join_non_empty
@@ -302,6 +312,10 @@ def sanitize_config(raw_config):
         config["digit_style"] = digit_style
     elif isinstance(raw_config.get("use_bold"), bool):
         config["digit_style"] = "sans_bold" if raw_config["use_bold"] else "normal"
+
+    letter_style = raw_config.get("letter_style")
+    if letter_style in LETTER_STYLE_MAPS:
+        config["letter_style"] = letter_style
 
     location = raw_config.get("location")
     if isinstance(location, str) and location.strip():
@@ -544,15 +558,19 @@ def build_last_name_context(config, local_time, respect_switches=True):
         "emoji": "".join(active_emojis),
     }
 
-def render_last_name_items(items, context, digit_style):
+def render_last_name_items(items, context, digit_style, letter_style="normal"):
     digit_map = DIGIT_STYLE_MAPS[digit_style]
+    letter_map = LETTER_STYLE_MAPS[letter_style]
     parts = []
     active_state_parts = []
     for item in items:
         item_type = item.get("type")
         value = item.get("value", "") if item_type == "text" else context.get(item_type, "")
         if value:
-            parts.append(value if item_type in ("emoji", "text") else value.translate(digit_map))
+            if item_type == "emoji":
+                parts.append(value)
+            else:
+                parts.append(value.translate(digit_map).translate(letter_map))
         if item_type in ("emoji", "text") and value:
             active_state_parts.append(value)
     return compose_last_name(parts), "|".join(active_state_parts)
@@ -563,13 +581,14 @@ def build_classic_last_name(config, local_time):
         [{"type": item} for item in config["name_order"]],
         context,
         config["digit_style"],
+        config["letter_style"],
     )
 
 def build_custom_last_name(config, local_time):
     context = build_last_name_context(config, local_time, respect_switches=False)
     rule = get_active_last_name_rule(config["last_name_rules"], local_time)
     items = rule["items"] if rule else config["last_name_default_items"]
-    last_name, active_state = render_last_name_items(items, context, config["digit_style"])
+    last_name, active_state = render_last_name_items(items, context, config["digit_style"], config["letter_style"])
     if rule:
         rule_state = f"rule:{rule['start']}-{rule['end']}:{rule['name']}"
     else:

@@ -24,7 +24,7 @@ import bio_template_loader
 # 【版本定义】
 # 每次修改代码推送到 GitHub 前，请手动提升此版本号
 # ==========================================
-CURRENT_VERSION = "v1.10.0"
+CURRENT_VERSION = "v1.11.0"
 AUTHOR = "oKafuChino"
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -55,13 +55,21 @@ ORDER_LABELS = {
     "emoji": "Emoji",
     "text": "自定义文本",
 }
-DEFAULT_CONFIG = {"show_time": True, "show_timezone": True, "show_date": False, "show_temp": True, "show_weather": True, "location": "Los Angeles", "digit_style": "sans_bold", "name_order": DEFAULT_NAME_ORDER.copy(), "last_name_mode": "classic", "last_name_rules": [], "last_name_default_items": [{"type": item} for item in DEFAULT_NAME_ORDER], "bio_enabled": False, "birth_date": "", "fixed_bio": "", "bio_template": "elapsed_en", "update_interval": 1, "emoji_schedules": []}
+DEFAULT_CONFIG = {"show_time": True, "show_timezone": True, "show_date": False, "show_temp": True, "show_weather": True, "location": "Los Angeles", "digit_style": "sans_bold", "letter_style": "normal", "name_order": DEFAULT_NAME_ORDER.copy(), "last_name_mode": "classic", "last_name_rules": [], "last_name_default_items": [{"type": item} for item in DEFAULT_NAME_ORDER], "bio_enabled": False, "birth_date": "", "fixed_bio": "", "bio_template": "elapsed_en", "update_interval": 1, "emoji_schedules": []}
 BOOL_CONFIG_KEYS = ("show_time", "show_timezone", "show_date", "show_temp", "show_weather", "bio_enabled")
 DIGIT_STYLES = {
     "normal": "1",
     "sans_bold": "𝟭",
     "serif_bold": "𝟏",
     "double_struck": "𝟙",
+}
+LETTER_STYLES = {
+    "normal": "Aa",
+    "sans_bold": "𝗔𝗮",
+    "script": "𝒜𝒶",
+    "bold_script": "𝓐𝓪",
+    "monospace": "𝙰𝚊",
+    "double_struck": "𝔸𝕒",
 }
 UPDATE_INTERVALS = (1, 5, 15, 30, 60)
 MAX_LOCATION_LENGTH = 80
@@ -331,6 +339,7 @@ def build_bio_context(birth_date, fixed_bio, today=None, config=None, local_time
         "temp": weather_data.get("temp", ""),
         "weather": weather_data.get("emoji", ""),
         "digit_style": config.get("digit_style", "sans_bold"),
+        "letter_style": config.get("letter_style", "normal"),
         "max_length": MAX_BIO_LENGTH,
     }
     ctx["join"] = join_non_empty
@@ -369,6 +378,10 @@ def sanitize_config(raw_config):
         config["digit_style"] = digit_style
     elif isinstance(raw_config.get("use_bold"), bool):
         config["digit_style"] = "sans_bold" if raw_config["use_bold"] else "normal"
+
+    letter_style = raw_config.get("letter_style")
+    if letter_style in LETTER_STYLES:
+        config["letter_style"] = letter_style
 
     location = raw_config.get("location")
     if isinstance(location, str) and location.strip():
@@ -445,22 +458,23 @@ def render_menu(config):
     menu_line("6", "显示温度", state_text(config['show_temp']), "magenta")
     menu_line("7", "显示天气", state_text(config['show_weather']), "magenta")
     menu_line("8", "数字字体", f"样式: {DIGIT_STYLES[config['digit_style']]}", "magenta")
-    menu_line("9", "设置地区", f"当前: {safe_display(config['location'])}", "magenta")
-    menu_line("10", "输出顺序", format_name_order(config["name_order"]), "magenta")
-    menu_line("11", "一键开启全部", "时间 / 时区 / 日期 / 温度 / 天气", "magenta")
+    menu_line("9", "字母字体", f"样式: {LETTER_STYLES[config['letter_style']]}", "magenta")
+    menu_line("10", "设置地区", f"当前: {safe_display(config['location'])}", "magenta")
+    menu_line("11", "输出顺序", format_name_order(config["name_order"]), "magenta")
+    menu_line("12", "一键开启全部", "时间 / 时区 / 日期 / 温度 / 天气", "magenta")
 
     menu_section("自动化设置")
-    menu_line("12", "Bio 自动更新", state_text(config['bio_enabled']), "blue")
-    menu_line("13", "Last Name 频率", f"每 {config['update_interval']} 分钟", "blue")
+    menu_line("13", "Bio 自动更新", state_text(config['bio_enabled']), "blue")
+    menu_line("14", "Last Name 频率", f"每 {config['update_interval']} 分钟", "blue")
     mode_text = "自定义" if config["last_name_mode"] == "custom" else "经典"
-    menu_line("14", "Last Name 规则", f"{mode_text} / {len(config['last_name_rules'])} 条规则", "blue")
+    menu_line("15", "Last Name 规则", f"{mode_text} / {len(config['last_name_rules'])} 条规则", "blue")
 
     menu_section("维护工具")
-    menu_line("15", "重启后台服务", "立即重载配置", "green")
-    menu_line("16", "检查并更新", "从 GitHub 拉取核心脚本", "green")
-    menu_line("17", "同步服务器时区", "改名显示将使用 UTC 偏移", "green")
-    menu_line("18", "强制更新 Last Name", "立即按当前配置更新一次", "green")
-    menu_line("19", "强制更新 Bio", "立即按当前配置更新一次", "green")
+    menu_line("16", "重启后台服务", "立即重载配置", "green")
+    menu_line("17", "检查并更新", "从 GitHub 拉取核心脚本", "green")
+    menu_line("18", "同步服务器时区", "改名显示将使用 UTC 偏移", "green")
+    menu_line("19", "强制更新 Last Name", "立即按当前配置更新一次", "green")
+    menu_line("20", "强制更新 Bio", "立即按当前配置更新一次", "green")
 
     print()
     menu_line("99", "一键卸载脚本", "停止服务并删除程序与配置", "red")
@@ -1195,6 +1209,26 @@ def configure_digit_style(config):
     else:
         input("按回车键返回主菜单...")
 
+def configure_letter_style(config):
+    style_keys = list(LETTER_STYLES)
+    print("\n请选择英文字母字体:")
+    for index, key in enumerate(style_keys, 1):
+        marker = " (当前)" if key == config["letter_style"] else ""
+        print(f"  {index}. {LETTER_STYLES[key]}{marker}")
+
+    choice = input("请选择字体 (直接回车取消): ").strip()
+    if not choice:
+        return
+    if not choice.isdigit() or not 1 <= int(choice) <= len(style_keys):
+        input("❌ 选项无效，按回车键返回主菜单...")
+        return
+
+    config["letter_style"] = style_keys[int(choice) - 1]
+    if save_config(config):
+        input(f"✅ 英文字母字体已切换为 {LETTER_STYLES[config['letter_style']]}，按回车键返回主菜单...")
+    else:
+        input("按回车键返回主菜单...")
+
 def read_last_name_items(prompt):
     print("\n可选字段:")
     item_types = LAST_NAME_ITEM_TYPES
@@ -1525,6 +1559,9 @@ def main_menu():
             configure_digit_style(config)
             
         elif choice == '9':
+            configure_letter_style(config)
+            
+        elif choice == '10':
             new_loc = input("请输入新的城市名称 (拼音或英文): ").strip()
             if new_loc:
                 if len(new_loc) > MAX_LOCATION_LENGTH:
@@ -1533,23 +1570,23 @@ def main_menu():
                 config['location'] = new_loc
                 save_config_and_pause(config)
                 
-        elif choice == '10':
+        elif choice == '11':
             configure_name_order(config)
                 
-        elif choice == '11':
+        elif choice == '12':
             config.update({"show_time": True, "show_timezone": True, "show_date": True, "show_temp": True, "show_weather": True})
             save_config_and_pause(config)
             
-        elif choice == '12':
+        elif choice == '13':
             configure_bio(config)
 
-        elif choice == '13':
+        elif choice == '14':
             configure_update_interval(config)
 
-        elif choice == '14':
+        elif choice == '15':
             configure_last_name_rules(config)
 
-        elif choice == '15':
+        elif choice == '16':
             print("\n正在强制重启后台服务...")
             restart_code = run_command(["sudo", "systemctl", "restart", "tg_name.service"])
             if restart_code == 0:
@@ -1558,7 +1595,7 @@ def main_menu():
                 print("❌ 服务重启失败，请使用 [2] 查看日志。")
             input("按回车键返回主菜单...")
             
-        elif choice == '16':
+        elif choice == '17':
             if BASE_DIR != "/opt/tg_updater":
                 input("❌ 当前面板不在 /opt/tg_updater，已取消更新以避免覆盖安装目录。按回车键返回主菜单...")
                 continue
@@ -1670,7 +1707,7 @@ def main_menu():
                 print("\n❌ 更新失败！请检查 VPS 网络连接或 GitHub 仓库地址是否正确。")
             input("按回车键返回主菜单...")
             
-        elif choice == '17':
+        elif choice == '18':
             loc = config.get('location', '').lower()
             # 建立常见城市与标准时区 (IANA) 的映射字典
             tz_mapping = {
@@ -1717,12 +1754,12 @@ def main_menu():
                     print("⚠️ 时区已设置，但后台服务重启失败，请使用 [2] 查看日志。")
             input("按回车键返回主菜单...")
 
-        elif choice == '18':
+        elif choice == '19':
             trigger_service_update("SIGUSR1", "Last Name")
 
-        elif choice == '19':
+        elif choice == '20':
             if not config.get("bio_enabled"):
-                input("❌ Bio 自动更新尚未开启，请先使用 [12] 完成配置。按回车键返回主菜单...")
+                input("❌ Bio 自动更新尚未开启，请先使用 [13] 完成配置。按回车键返回主菜单...")
                 continue
             trigger_service_update("SIGUSR2", "Bio")
 

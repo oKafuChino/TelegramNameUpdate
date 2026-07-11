@@ -6,6 +6,7 @@
   "show_weather": true,
   "location": "Los Angeles",
   "digit_style": "sans_bold",
+  "letter_style": "normal",
   "last_name_mode": "classic",
   "last_name_rules": [],
   "last_name_default_items": [

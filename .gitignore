@@ -11,3 +11,6 @@ env/
 api_auth.json
 bio_last_update.txt
 emoji_last_active.txt
+docs/superpowers/specs/2026-07-11-bio-custom-python-templates-design.md
+tests/test_core.py
+docs/superpowers/plans/2026-07-11-bio-custom-python-templates.md

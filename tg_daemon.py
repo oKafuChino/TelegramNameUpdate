@@ -14,10 +14,12 @@ import tempfile
 import re
 import getpass
 import signal
+import copy
 from datetime import date
 from telethon import TelegramClient
 from telethon.errors import FloodWaitError
 from telethon.tl.functions.account import UpdateProfileRequest
+import bio_templates
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 IS_INSTALLED = BASE_DIR == "/opt/tg_updater"
@@ -44,6 +46,8 @@ DIGIT_STYLE_MAPS = {
 }
 current_weather_data = {"temp": "", "emoji": ""}
 DEFAULT_NAME_ORDER = ["time", "timezone", "date", "temp", "weather", "emoji"]
+LAST_NAME_FIELD_TYPES = DEFAULT_NAME_ORDER.copy()
+LAST_NAME_ITEM_TYPES = (*LAST_NAME_FIELD_TYPES, "text")
 ORDER_LABELS = {
     "time": "时间",
     "timezone": "时区",
@@ -51,8 +55,9 @@ ORDER_LABELS = {
     "temp": "温度",
     "weather": "天气",
     "emoji": "Emoji",
+    "text": "自定义文本",
 }
-DEFAULT_CONFIG = {"show_time": True, "show_timezone": True, "show_date": False, "show_temp": True, "show_weather": True, "location": "Los Angeles", "digit_style": "sans_bold", "name_order": DEFAULT_NAME_ORDER.copy(), "bio_enabled": False, "birth_date": "", "fixed_bio": "", "update_interval": 1, "emoji_schedules": []}
+DEFAULT_CONFIG = {"show_time": True, "show_timezone": True, "show_date": False, "show_temp": True, "show_weather": True, "location": "Los Angeles", "digit_style": "sans_bold", "name_order": DEFAULT_NAME_ORDER.copy(), "last_name_mode": "classic", "last_name_rules": [], "last_name_default_items": [{"type": item} for item in DEFAULT_NAME_ORDER], "bio_enabled": False, "birth_date": "", "fixed_bio": "", "bio_template": "elapsed_en", "update_interval": 1, "emoji_schedules": []}
 BOOL_CONFIG_KEYS = ("show_time", "show_timezone", "show_date", "show_temp", "show_weather", "bio_enabled")
 UPDATE_INTERVALS = (1, 5, 15, 30, 60)
 MAX_LOCATION_LENGTH = 80
@@ -60,7 +65,11 @@ MAX_BIO_LENGTH = 70
 MAX_EMOJI_RULES = 20
 MAX_EMOJI_TEXT_LENGTH = 32
 MAX_ACTIVE_EMOJI_LENGTH = 32
+MAX_ACTIVE_STATE_LENGTH = 128
 MAX_LAST_NAME_LENGTH = 64
+MAX_LAST_NAME_RULES = 20
+MAX_LAST_NAME_TEXT_LENGTH = 32
+MAX_LAST_NAME_RULE_NAME_LENGTH = 24
 MAX_CONFIG_FILE_SIZE = 256 * 1024
 MAX_API_CONFIG_FILE_SIZE = 16 * 1024
 MAX_WEATHER_RESPONSE_SIZE = 512 * 1024
@@ -71,13 +80,62 @@ def normalize_name_order(order):
 
     normalized = []
     for item in order:
-        if item in ORDER_LABELS and item not in normalized:
+        if item in DEFAULT_NAME_ORDER and item not in normalized:
             normalized.append(item)
 
     for item in DEFAULT_NAME_ORDER:
         if item not in normalized:
             normalized.append(item)
 
+    return normalized
+
+def normalize_last_name_text(value):
+    if not isinstance(value, str):
+        return ""
+    cleaned = " ".join("".join(char for char in value.strip() if char.isprintable()).split())
+    return cleaned[:MAX_LAST_NAME_TEXT_LENGTH]
+
+def normalize_last_name_items(items):
+    if not isinstance(items, list):
+        return []
+
+    normalized = []
+    for item in items:
+        if isinstance(item, str):
+            item = {"type": item}
+        if not isinstance(item, dict):
+            continue
+        item_type = item.get("type")
+        if item_type in LAST_NAME_FIELD_TYPES:
+            normalized.append({"type": item_type})
+        elif item_type == "text":
+            text = normalize_last_name_text(item.get("value"))
+            if text:
+                normalized.append({"type": "text", "value": text})
+        if len(normalized) >= len(DEFAULT_NAME_ORDER) + 6:
+            break
+    return normalized
+
+def default_last_name_items_from_order(order):
+    return [{"type": item} for item in normalize_name_order(order)]
+
+def normalize_last_name_rules(rules):
+    if not isinstance(rules, list):
+        return []
+
+    normalized = []
+    for rule in rules:
+        if not isinstance(rule, dict):
+            continue
+        start = parse_time_text(rule.get("start"))
+        end = parse_time_text(rule.get("end"))
+        items = normalize_last_name_items(rule.get("items"))
+        if not start or not end or start == end or not items:
+            continue
+        name = normalize_last_name_text(rule.get("name"))[:MAX_LAST_NAME_RULE_NAME_LENGTH] or f"{start}-{end}"
+        normalized.append({"name": name, "start": start, "end": end, "items": items})
+        if len(normalized) >= MAX_LAST_NAME_RULES:
+            break
     return normalized
 
 def parse_time_text(value):
@@ -192,12 +250,27 @@ def calculate_elapsed(birth_date, today=None):
     checkpoint = add_months(anniversary, months)
     return years, months, (today - checkpoint).days
 
-def build_bio_text(birth_date, fixed_bio, today=None):
+def build_bio_context(birth_date, fixed_bio, today=None):
     years, months, days = calculate_elapsed(birth_date, today)
-    return f"It lasted {years} years {months} months and {days} days | {fixed_bio}"
+    today = today or date.today()
+    return {
+        "years": years,
+        "months": months,
+        "days": days,
+        "birth_date": birth_date,
+        "today": today,
+        "fixed_bio": fixed_bio,
+    }
+
+def build_bio_text(birth_date, fixed_bio, today=None, template_name="elapsed_en"):
+    try:
+        return bio_templates.render_bio(template_name, build_bio_context(birth_date, fixed_bio, today))
+    except Exception:
+        logger.warning("Bio template %s failed; using elapsed_en", template_name, exc_info=True)
+        return bio_templates.render_bio("elapsed_en", build_bio_context(birth_date, fixed_bio, today))
 
 def sanitize_config(raw_config):
-    config = DEFAULT_CONFIG.copy()
+    config = copy.deepcopy(DEFAULT_CONFIG)
     if not isinstance(raw_config, dict):
         raw_config = {}
 
@@ -219,6 +292,12 @@ def sanitize_config(raw_config):
             config["location"] = cleaned_location[:MAX_LOCATION_LENGTH]
 
     config["name_order"] = normalize_name_order(raw_config.get("name_order"))
+    if raw_config.get("last_name_mode") == "custom":
+        config["last_name_mode"] = "custom"
+    config["last_name_default_items"] = normalize_last_name_items(raw_config.get("last_name_default_items"))
+    if not config["last_name_default_items"]:
+        config["last_name_default_items"] = default_last_name_items_from_order(config["name_order"])
+    config["last_name_rules"] = normalize_last_name_rules(raw_config.get("last_name_rules"))
     birth_date = parse_birth_date(raw_config.get("birth_date"))
     if birth_date:
         config["birth_date"] = birth_date.isoformat()
@@ -227,9 +306,13 @@ def sanitize_config(raw_config):
     if isinstance(fixed_bio, str):
         config["fixed_bio"] = "".join(char for char in fixed_bio.strip() if char.isprintable())[:MAX_BIO_LENGTH]
 
+    bio_template = raw_config.get("bio_template")
+    if isinstance(bio_template, str) and bio_template in bio_templates.BIO_TEMPLATES:
+        config["bio_template"] = bio_template
+
     if not config["birth_date"] or not config["fixed_bio"]:
         config["bio_enabled"] = False
-    elif len(build_bio_text(birth_date, config["fixed_bio"])) > MAX_BIO_LENGTH:
+    elif len(build_bio_text(birth_date, config["fixed_bio"], template_name=config["bio_template"])) > MAX_BIO_LENGTH:
         config["bio_enabled"] = False
 
     update_interval = raw_config.get("update_interval")
@@ -413,6 +496,13 @@ def get_active_emoji(schedules, local_time):
     minute_of_day = local_time.tm_hour * 60 + local_time.tm_min
     return [rule["emoji"] for rule in schedules if is_rule_active(rule, minute_of_day)]
 
+def get_active_last_name_rule(rules, local_time):
+    minute_of_day = local_time.tm_hour * 60 + local_time.tm_min
+    for rule in rules:
+        if is_rule_active(rule, minute_of_day):
+            return rule
+    return None
+
 def compose_last_name(parts):
     selected = []
     used = 0
@@ -424,28 +514,61 @@ def compose_last_name(parts):
         used += extra
     return " ".join(selected)
 
-def build_dynamic_last_name(config, local_time):
+def build_last_name_context(config, local_time, respect_switches=True):
     active_emojis = get_active_emoji(config['emoji_schedules'], local_time)
-    values = {
-        "time": time.strftime("%H:%M", local_time) if config['show_time'] else "",
-        "timezone": get_utc_offset_text(local_time) if config['show_timezone'] else "",
-        "date": time.strftime("%m-%d", local_time) if config['show_date'] else "",
-        "temp": current_weather_data['temp'] if config['show_temp'] else "",
-        "weather": current_weather_data['emoji'] if config['show_weather'] else "",
+    return {
+        "time": time.strftime("%H:%M", local_time) if not respect_switches or config['show_time'] else "",
+        "timezone": get_utc_offset_text(local_time) if not respect_switches or config['show_timezone'] else "",
+        "date": time.strftime("%m-%d", local_time) if not respect_switches or config['show_date'] else "",
+        "temp": current_weather_data['temp'] if not respect_switches or config['show_temp'] else "",
+        "weather": current_weather_data['emoji'] if not respect_switches or config['show_weather'] else "",
         "emoji": "".join(active_emojis),
     }
-    digit_map = DIGIT_STYLE_MAPS[config['digit_style']]
+
+def render_last_name_items(items, context, digit_style):
+    digit_map = DIGIT_STYLE_MAPS[digit_style]
     parts = []
-    for item in config["name_order"]:
-        value = values.get(item)
+    active_state_parts = []
+    for item in items:
+        item_type = item.get("type")
+        value = item.get("value", "") if item_type == "text" else context.get(item_type, "")
         if value:
-            parts.append(value if item == "emoji" else value.translate(digit_map))
-    return compose_last_name(parts), values["emoji"]
+            parts.append(value if item_type in ("emoji", "text") else value.translate(digit_map))
+        if item_type in ("emoji", "text") and value:
+            active_state_parts.append(value)
+    return compose_last_name(parts), "|".join(active_state_parts)
+
+def build_classic_last_name(config, local_time):
+    context = build_last_name_context(config, local_time)
+    return render_last_name_items(
+        [{"type": item} for item in config["name_order"]],
+        context,
+        config["digit_style"],
+    )
+
+def build_custom_last_name(config, local_time):
+    context = build_last_name_context(config, local_time, respect_switches=False)
+    rule = get_active_last_name_rule(config["last_name_rules"], local_time)
+    items = rule["items"] if rule else config["last_name_default_items"]
+    last_name, active_state = render_last_name_items(items, context, config["digit_style"])
+    if rule:
+        rule_state = f"rule:{rule['start']}-{rule['end']}:{rule['name']}"
+    else:
+        rule_state = "default"
+    return last_name, f"{rule_state}|{active_state}"[:MAX_ACTIVE_STATE_LENGTH]
+
+def build_dynamic_last_name(config, local_time):
+    if config.get("last_name_mode") == "custom":
+        return build_custom_last_name(config, local_time)
+    return build_classic_last_name(config, local_time)
+
+def should_skip_for_bio_update(config, local_time):
+    return bool(config.get("bio_enabled")) and local_time.tm_hour == 3 and local_time.tm_min == 0
 
 def load_emoji_active_state():
     try:
         with open(EMOJI_STATE_FILE, 'r', encoding='utf-8') as f:
-            return f.read(MAX_ACTIVE_EMOJI_LENGTH + 1)[:MAX_ACTIVE_EMOJI_LENGTH]
+            return f.read(MAX_ACTIVE_STATE_LENGTH + 1)[:MAX_ACTIVE_STATE_LENGTH]
     except OSError:
         return None
 
@@ -499,13 +622,10 @@ async def update_last_name_once(
     last_active_emoji,
     forced=False,
     force_restore=False,
+    skip_once=False,
 ):
-    if config['bio_enabled'] and 2 <= local_time.tm_hour < 4:
-        last_name = "💤"
-        if forced or last_name != last_sent_name:
-            await update_profile(client, update_lock, last_name=last_name)
-            logger.info('Updated Last Name -> 💤')
-            return last_name, last_active_emoji, True
+    if not forced and (skip_once or should_skip_for_bio_update(config, local_time)):
+        logger.info("Skipped one Last Name update after Bio update")
         return last_sent_name, last_active_emoji, False
 
     last_name, active_emoji = build_dynamic_last_name(config, local_time)
@@ -524,8 +644,9 @@ async def update_last_name_once(
     logger.info('Updated -> %s', last_name)
     return last_name, active_emoji, True
 
-async def change_name_auto(client, update_lock, force_event=None):
+async def change_name_auto(client, update_lock, force_event=None, skip_once_event=None):
     force_event = force_event or asyncio.Event()
+    skip_once_event = skip_once_event or asyncio.Event()
     last_sent_name = None
     last_active_emoji = load_emoji_active_state()
     first_run = True
@@ -539,16 +660,17 @@ async def change_name_auto(client, update_lock, force_event=None):
                 last_sent_name = await get_current_last_name(client, update_lock)
                 first_run = False
                 initial_time = time.localtime()
-                initial_config = load_config()
-                is_sleep_window = initial_config['bio_enabled'] and 2 <= initial_time.tm_hour < 4
-                force_restore = not is_sleep_window and last_sent_name == "💤"
-                if not forced and not is_sleep_window and not force_restore and initial_time.tm_sec > 1:
+                force_restore = last_sent_name == "💤"
+                if not forced and not force_restore and initial_time.tm_sec > 1:
                     forced = await wait_for_next_name_update(force_event)
             else:
                 forced = await wait_for_next_name_update(force_event)
 
             now = time.localtime()
             config = load_config()
+            skip_once = skip_once_event.is_set()
+            if skip_once:
+                skip_once_event.clear()
             last_sent_name, last_active_emoji, _ = await update_last_name_once(
                 client,
                 update_lock,
@@ -558,6 +680,7 @@ async def change_name_auto(client, update_lock, force_event=None):
                 last_active_emoji,
                 forced=forced,
                 force_restore=force_restore,
+                skip_once=skip_once,
             )
         except FloodWaitError as e:
             logger.warning(f"Flood wait: sleeping {e.seconds} seconds")
@@ -583,13 +706,13 @@ def load_bio_update_date():
 def save_bio_update_date(value):
     save_text_atomic(BIO_STATE_FILE, value.isoformat(), 'ascii')
 
-async def update_bio_once(client, update_lock, config, today, last_updated_date, forced=False):
+async def update_bio_once(client, update_lock, config, today, last_updated_date, forced=False, skip_once_event=None):
     birth_date = parse_birth_date(config.get("birth_date"))
     should_update = forced or last_updated_date != today
     if not config['bio_enabled'] or birth_date is None or not should_update:
         return last_updated_date, False
 
-    bio_text = build_bio_text(birth_date, config['fixed_bio'], today)
+    bio_text = build_bio_text(birth_date, config['fixed_bio'], today, config["bio_template"])
     if len(bio_text) > MAX_BIO_LENGTH:
         logger.error("Bio is too long: %s/%s characters", len(bio_text), MAX_BIO_LENGTH)
         return last_updated_date, False
@@ -599,6 +722,8 @@ async def update_bio_once(client, update_lock, config, today, last_updated_date,
         save_bio_update_date(today)
     except OSError:
         logger.warning("Failed to save Bio update state", exc_info=True)
+    if skip_once_event is not None and not forced:
+        skip_once_event.set()
     logger.info('Updated Bio -> %s', bio_text)
     return today, True
 
@@ -611,7 +736,7 @@ async def wait_for_next_bio_check(force_event):
     except asyncio.TimeoutError:
         return False
 
-async def update_bio_auto(client, update_lock, force_event=None):
+async def update_bio_auto(client, update_lock, force_event=None, skip_once_event=None):
     force_event = force_event or asyncio.Event()
     last_updated_date = load_bio_update_date()
     forced = force_event.is_set()
@@ -630,6 +755,7 @@ async def update_bio_auto(client, update_lock, force_event=None):
                     today,
                     last_updated_date,
                     forced=forced,
+                    skip_once_event=skip_once_event,
                 )
         except FloodWaitError as e:
             logger.warning("Bio flood wait: sleeping %s seconds", e.seconds)
@@ -652,6 +778,7 @@ async def main():
     loop = asyncio.get_running_loop()
     force_name_event = asyncio.Event()
     force_bio_event = asyncio.Event()
+    skip_last_name_once_event = asyncio.Event()
     if not login_only:
         loop.add_signal_handler(signal.SIGUSR1, force_name_event.set)
         loop.add_signal_handler(signal.SIGUSR2, force_bio_event.set)
@@ -673,9 +800,9 @@ async def main():
         return
 
     update_lock = asyncio.Lock()
-    task_name = asyncio.create_task(change_name_auto(client, update_lock, force_name_event))
+    task_name = asyncio.create_task(change_name_auto(client, update_lock, force_name_event, skip_last_name_once_event))
     task_weather = asyncio.create_task(update_weather_loop(loop))
-    task_bio = asyncio.create_task(update_bio_auto(client, update_lock, force_bio_event))
+    task_bio = asyncio.create_task(update_bio_auto(client, update_lock, force_bio_event, skip_last_name_once_event))
     
     try:
         await client.run_until_disconnected()

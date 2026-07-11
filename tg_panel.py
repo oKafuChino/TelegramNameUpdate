@@ -15,13 +15,15 @@ import calendar
 import ast
 import shutil
 import shlex
+import copy
 from datetime import date
+import bio_templates
 
 # ==========================================
 # 【版本定义】
 # 每次修改代码推送到 GitHub 前，请手动提升此版本号
 # ==========================================
-CURRENT_VERSION = "v1.8.2"
+CURRENT_VERSION = "v1.9.0"
 AUTHOR = "oKafuChino"
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -41,6 +43,8 @@ LEGACY_API_CONFIG_FILE = os.path.join(BASE_DIR, 'api_auth.json')
 REPO_URL = "https://raw.githubusercontent.com/oKafuChino/TelegramNameUpdate/main"
 SERVICE_USER = "tg_updater"
 DEFAULT_NAME_ORDER = ["time", "timezone", "date", "temp", "weather", "emoji"]
+LAST_NAME_FIELD_TYPES = DEFAULT_NAME_ORDER.copy()
+LAST_NAME_ITEM_TYPES = (*LAST_NAME_FIELD_TYPES, "text")
 ORDER_LABELS = {
     "time": "时间",
     "timezone": "时区",
@@ -48,8 +52,9 @@ ORDER_LABELS = {
     "temp": "温度",
     "weather": "天气",
     "emoji": "Emoji",
+    "text": "自定义文本",
 }
-DEFAULT_CONFIG = {"show_time": True, "show_timezone": True, "show_date": False, "show_temp": True, "show_weather": True, "location": "Los Angeles", "digit_style": "sans_bold", "name_order": DEFAULT_NAME_ORDER.copy(), "bio_enabled": False, "birth_date": "", "fixed_bio": "", "update_interval": 1, "emoji_schedules": []}
+DEFAULT_CONFIG = {"show_time": True, "show_timezone": True, "show_date": False, "show_temp": True, "show_weather": True, "location": "Los Angeles", "digit_style": "sans_bold", "name_order": DEFAULT_NAME_ORDER.copy(), "last_name_mode": "classic", "last_name_rules": [], "last_name_default_items": [{"type": item} for item in DEFAULT_NAME_ORDER], "bio_enabled": False, "birth_date": "", "fixed_bio": "", "bio_template": "elapsed_en", "update_interval": 1, "emoji_schedules": []}
 BOOL_CONFIG_KEYS = ("show_time", "show_timezone", "show_date", "show_temp", "show_weather", "bio_enabled")
 DIGIT_STYLES = {
     "normal": "1",
@@ -63,6 +68,9 @@ MAX_BIO_LENGTH = 70
 MAX_EMOJI_RULES = 20
 MAX_EMOJI_TEXT_LENGTH = 32
 MAX_ACTIVE_EMOJI_LENGTH = 32
+MAX_LAST_NAME_RULES = 20
+MAX_LAST_NAME_TEXT_LENGTH = 32
+MAX_LAST_NAME_RULE_NAME_LENGTH = 24
 MAX_CONFIG_FILE_SIZE = 256 * 1024
 MAX_REMOTE_FILE_SIZE = 2 * 1024 * 1024
 MAX_VERSION_RESPONSE_SIZE = 512 * 1024
@@ -108,7 +116,7 @@ def normalize_name_order(order):
 
     normalized = []
     for item in order:
-        if item in ORDER_LABELS and item not in normalized:
+        if item in DEFAULT_NAME_ORDER and item not in normalized:
             normalized.append(item)
 
     for item in DEFAULT_NAME_ORDER:
@@ -119,6 +127,64 @@ def normalize_name_order(order):
 
 def format_name_order(order):
     return " > ".join(ORDER_LABELS[item] for item in normalize_name_order(order))
+
+def normalize_last_name_text(value):
+    if not isinstance(value, str):
+        return ""
+    cleaned = " ".join("".join(char for char in value.strip() if char.isprintable()).split())
+    return cleaned[:MAX_LAST_NAME_TEXT_LENGTH]
+
+def normalize_last_name_items(items):
+    if not isinstance(items, list):
+        return []
+
+    normalized = []
+    for item in items:
+        if isinstance(item, str):
+            item = {"type": item}
+        if not isinstance(item, dict):
+            continue
+        item_type = item.get("type")
+        if item_type in LAST_NAME_FIELD_TYPES:
+            normalized.append({"type": item_type})
+        elif item_type == "text":
+            text = normalize_last_name_text(item.get("value"))
+            if text:
+                normalized.append({"type": "text", "value": text})
+        if len(normalized) >= len(DEFAULT_NAME_ORDER) + 6:
+            break
+    return normalized
+
+def default_last_name_items_from_order(order):
+    return [{"type": item} for item in normalize_name_order(order)]
+
+def normalize_last_name_rules(rules):
+    if not isinstance(rules, list):
+        return []
+
+    normalized = []
+    for rule in rules:
+        if not isinstance(rule, dict):
+            continue
+        start = parse_time_text(rule.get("start"))
+        end = parse_time_text(rule.get("end"))
+        items = normalize_last_name_items(rule.get("items"))
+        if not start or not end or start == end or not items:
+            continue
+        name = normalize_last_name_text(rule.get("name"))[:MAX_LAST_NAME_RULE_NAME_LENGTH] or f"{start}-{end}"
+        normalized.append({"name": name, "start": start, "end": end, "items": items})
+        if len(normalized) >= MAX_LAST_NAME_RULES:
+            break
+    return normalized
+
+def format_last_name_items(items):
+    labels = []
+    for item in normalize_last_name_items(items):
+        if item["type"] == "text":
+            labels.append(f"文本:{safe_display(item['value'])}")
+        else:
+            labels.append(ORDER_LABELS[item["type"]])
+    return " > ".join(labels) if labels else "未设置"
 
 def safe_display(value):
     return "".join(char if char.isprintable() else "?" for char in str(value))
@@ -228,12 +294,26 @@ def calculate_elapsed(birth_date, today=None):
     checkpoint = add_months(anniversary, months)
     return years, months, (today - checkpoint).days
 
-def build_bio_text(birth_date, fixed_bio, today=None):
+def build_bio_context(birth_date, fixed_bio, today=None):
     years, months, days = calculate_elapsed(birth_date, today)
-    return f"It lasted {years} years {months} months and {days} days | {fixed_bio}"
+    today = today or date.today()
+    return {
+        "years": years,
+        "months": months,
+        "days": days,
+        "birth_date": birth_date,
+        "today": today,
+        "fixed_bio": fixed_bio,
+    }
+
+def build_bio_text(birth_date, fixed_bio, today=None, template_name="elapsed_en"):
+    try:
+        return bio_templates.render_bio(template_name, build_bio_context(birth_date, fixed_bio, today))
+    except Exception:
+        return bio_templates.render_bio("elapsed_en", build_bio_context(birth_date, fixed_bio, today))
 
 def sanitize_config(raw_config):
-    config = DEFAULT_CONFIG.copy()
+    config = copy.deepcopy(DEFAULT_CONFIG)
     if not isinstance(raw_config, dict):
         raw_config = {}
 
@@ -255,6 +335,12 @@ def sanitize_config(raw_config):
             config["location"] = cleaned_location[:MAX_LOCATION_LENGTH]
 
     config["name_order"] = normalize_name_order(raw_config.get("name_order"))
+    if raw_config.get("last_name_mode") == "custom":
+        config["last_name_mode"] = "custom"
+    config["last_name_default_items"] = normalize_last_name_items(raw_config.get("last_name_default_items"))
+    if not config["last_name_default_items"]:
+        config["last_name_default_items"] = default_last_name_items_from_order(config["name_order"])
+    config["last_name_rules"] = normalize_last_name_rules(raw_config.get("last_name_rules"))
     birth_date = parse_birth_date(raw_config.get("birth_date"))
     if birth_date:
         config["birth_date"] = birth_date.isoformat()
@@ -263,9 +349,13 @@ def sanitize_config(raw_config):
     if isinstance(fixed_bio, str):
         config["fixed_bio"] = "".join(char for char in fixed_bio.strip() if char.isprintable())[:MAX_BIO_LENGTH]
 
+    bio_template = raw_config.get("bio_template")
+    if isinstance(bio_template, str) and bio_template in bio_templates.BIO_TEMPLATES:
+        config["bio_template"] = bio_template
+
     if not config["birth_date"] or not config["fixed_bio"]:
         config["bio_enabled"] = False
-    elif len(build_bio_text(birth_date, config["fixed_bio"])) > MAX_BIO_LENGTH:
+    elif len(build_bio_text(birth_date, config["fixed_bio"], template_name=config["bio_template"])) > MAX_BIO_LENGTH:
         config["bio_enabled"] = False
 
     update_interval = raw_config.get("update_interval")
@@ -319,7 +409,8 @@ def render_menu(config):
     menu_section("自动化设置")
     menu_line("12", "Bio 自动更新", state_text(config['bio_enabled']), "blue")
     menu_line("13", "Last Name 频率", f"每 {config['update_interval']} 分钟", "blue")
-    menu_line("14", "Emoji 时段", f"{len(config['emoji_schedules'])} 条规则", "blue")
+    mode_text = "自定义" if config["last_name_mode"] == "custom" else "经典"
+    menu_line("14", "Last Name 规则", f"{mode_text} / {len(config['last_name_rules'])} 条规则", "blue")
 
     menu_section("维护工具")
     menu_line("15", "重启后台服务", "立即重载配置", "green")
@@ -462,7 +553,7 @@ def harden_code_files():
 
     success = run_command(["sudo", "chown", "root:root", BASE_DIR]) == 0
     success = run_command(["sudo", "chmod", "755", BASE_DIR]) == 0 and success
-    for filename in ("tg_panel.py", "tg_daemon.py", "requirements.txt"):
+    for filename in ("tg_panel.py", "tg_daemon.py", "bio_templates.py", "requirements.txt"):
         path = os.path.join(BASE_DIR, filename)
         if os.path.isfile(path) and not os.path.islink(path):
             mode = "755" if filename.endswith(".py") else "644"
@@ -661,6 +752,13 @@ def validate_requirements_file(path):
 
     return bool(lines) and all(re.fullmatch(r"[A-Za-z0-9_.-]+==[A-Za-z0-9_.+-]+", line) for line in lines)
 
+def install_requirements_file(path):
+    pip_path = "/opt/tg_updater/venv/bin/pip"
+    if not os.path.exists(pip_path):
+        print("❌ 未找到虚拟环境 pip，请重新执行安装命令。")
+        return False
+    return run_command([pip_path, "install", "--no-cache-dir", "--no-compile", "-r", path]) == 0
+
 def replace_remote_file(tmp_target, target):
     return run_command(["sudo", "mv", tmp_target, target])
 
@@ -824,7 +922,7 @@ def configure_bio(config):
         return
 
     print("\n开启后，每天 03:00 自动更新 Bio。")
-    print("每天 02:00-04:00 暂停动态 Last Name，并显示 💤。")
+    print("Bio 更新成功后会跳过下一次自动 Last Name 更新，避免同一分钟连续修改资料。")
     current_birth_date = config.get("birth_date", "")
     birth_prompt = f"出生日期 YYYY-MM-DD [{current_birth_date}]: " if current_birth_date else "出生日期 YYYY-MM-DD: "
     raw_birth_date = input(birth_prompt).strip() or current_birth_date
@@ -841,7 +939,22 @@ def configure_bio(config):
         input("❌ 固定 Bio 不能为空，按回车键返回主菜单...")
         return
 
-    preview = build_bio_text(birth_date, fixed_bio)
+    template_keys = list(bio_templates.BIO_TEMPLATES)
+    current_template = config.get("bio_template", "elapsed_en")
+    print("\n可选 Bio 模板:")
+    for index, key in enumerate(template_keys, 1):
+        marker = " (当前)" if key == current_template else ""
+        print(f"  {index}. {key}{marker}")
+    raw_template = input("请选择 Bio 模板 (直接回车使用当前): ").strip()
+    if raw_template:
+        if not raw_template.isdigit() or not 1 <= int(raw_template) <= len(template_keys):
+            input("❌ Bio 模板选项无效，按回车键返回主菜单...")
+            return
+        bio_template = template_keys[int(raw_template) - 1]
+    else:
+        bio_template = current_template if current_template in bio_templates.BIO_TEMPLATES else "elapsed_en"
+
+    preview = build_bio_text(birth_date, fixed_bio, template_name=bio_template)
     if len(preview) > MAX_BIO_LENGTH:
         input(f"❌ 完整 Bio 长度为 {len(preview)}，超过 Telegram 的 {MAX_BIO_LENGTH} 字符限制。请缩短固定 Bio。按回车键返回主菜单...")
         return
@@ -850,6 +963,7 @@ def configure_bio(config):
         "bio_enabled": True,
         "birth_date": birth_date.isoformat(),
         "fixed_bio": fixed_bio,
+        "bio_template": bio_template,
     })
     bio_state_backup = None
     try:
@@ -927,6 +1041,156 @@ def configure_digit_style(config):
         input(f"✅ 数字字体已切换为 {DIGIT_STYLES[config['digit_style']]}，按回车键返回主菜单...")
     else:
         input("按回车键返回主菜单...")
+
+def read_last_name_items(prompt):
+    print("\n可选字段:")
+    item_types = LAST_NAME_ITEM_TYPES
+    for index, item_type in enumerate(item_types, 1):
+        print(f"  {index}. {ORDER_LABELS[item_type]}")
+    print("请输入输出顺序，例如 7,1,2,4。选择自定义文本时会继续要求输入内容。")
+    raw_order = input(prompt).strip()
+    if not raw_order:
+        return None
+
+    items = []
+    for part in raw_order.replace("，", ",").split(","):
+        part = part.strip()
+        if not part:
+            continue
+        if not part.isdigit() or not 1 <= int(part) <= len(item_types):
+            input("❌ 输入序号无效，按回车键继续...")
+            return None
+        item_type = item_types[int(part) - 1]
+        if item_type == "text":
+            text = normalize_last_name_text(input("自定义文本 / Emoji: "))
+            if not text:
+                input("❌ 自定义文本不能为空，按回车键继续...")
+                return None
+            items.append({"type": "text", "value": text})
+        else:
+            items.append({"type": item_type})
+    normalized = normalize_last_name_items(items)
+    if not normalized:
+        input("❌ 未输入有效输出内容，按回车键继续...")
+        return None
+    return normalized
+
+def print_last_name_rules(config):
+    print(f"当前模式: {'自定义' if config['last_name_mode'] == 'custom' else '经典'}")
+    print(f"默认输出: {format_last_name_items(config['last_name_default_items'])}")
+    if not config["last_name_rules"]:
+        print("时间段规则: 暂无")
+        return
+    print("时间段规则:")
+    for index, rule in enumerate(config["last_name_rules"], 1):
+        suffix = " (跨午夜)" if rule["start"] > rule["end"] else ""
+        print(f"  {index}. {safe_display(rule['name'])}  {rule['start']}-{rule['end']}{suffix}")
+        print(f"     {format_last_name_items(rule['items'])}")
+
+def configure_last_name_rules(config):
+    while True:
+        clear_screen()
+        print(color("Last Name 规则", "cyan", "bold"))
+        print("经典模式继续使用展示开关、输出顺序和 Emoji 时段。")
+        print("自定义模式会按时间段规则输出完整 Last Name；没有命中规则时使用默认输出。\n")
+        print_last_name_rules(config)
+        print("\n  [1] 切换经典 / 自定义模式")
+        print("  [2] 设置默认输出")
+        print("  [3] 添加时间段规则")
+        print("  [4] 删除时间段规则")
+        print("  [5] 清空时间段规则")
+        print("  [6] 经典 Emoji 时段")
+        print("  [0] 返回主菜单")
+        choice = input("\n请选择操作: ").strip()
+
+        if choice == "0":
+            return
+
+        if choice == "1":
+            old_mode = config["last_name_mode"]
+            config["last_name_mode"] = "custom" if old_mode == "classic" else "classic"
+            if save_config(config):
+                input(f"✅ Last Name 模式已切换为 {'自定义' if config['last_name_mode'] == 'custom' else '经典'}，按回车键继续...")
+            else:
+                config["last_name_mode"] = old_mode
+                input("按回车键继续...")
+            continue
+
+        if choice == "2":
+            items = read_last_name_items("默认输出顺序 (直接回车取消): ")
+            if items is None:
+                continue
+            old_items = config["last_name_default_items"]
+            config["last_name_default_items"] = items
+            if save_config(config):
+                input("✅ 默认输出已更新，按回车键继续...")
+            else:
+                config["last_name_default_items"] = old_items
+                input("按回车键继续...")
+            continue
+
+        if choice == "3":
+            if len(config["last_name_rules"]) >= MAX_LAST_NAME_RULES:
+                input(f"❌ 最多只能添加 {MAX_LAST_NAME_RULES} 条规则，按回车键继续...")
+                continue
+            name = normalize_last_name_text(input("规则名称: "))[:MAX_LAST_NAME_RULE_NAME_LENGTH]
+            start = parse_time_text(input("开始时间 HH:MM: ").strip())
+            end = parse_time_text(input("结束时间 HH:MM: ").strip())
+            if not start or not end or start == end:
+                input("❌ 时间格式无效，且开始时间不能等于结束时间。按回车键继续...")
+                continue
+            items = read_last_name_items("规则输出顺序 (直接回车取消): ")
+            if items is None:
+                continue
+            candidate = {
+                "name": name or f"{start}-{end}",
+                "start": start,
+                "end": end,
+                "items": items,
+            }
+            config["last_name_rules"].append(candidate)
+            if save_config(config):
+                input("✅ Last Name 规则已添加，按回车键继续...")
+            else:
+                config["last_name_rules"].pop()
+                input("按回车键继续...")
+            continue
+
+        if choice == "4":
+            if not config["last_name_rules"]:
+                input("暂无可删除规则，按回车键继续...")
+                continue
+            raw_index = input("请输入要删除的规则编号 (直接回车取消): ").strip()
+            if not raw_index:
+                continue
+            if not raw_index.isdigit() or not 1 <= int(raw_index) <= len(config["last_name_rules"]):
+                input("❌ 规则编号无效，按回车键继续...")
+                continue
+            removed = config["last_name_rules"].pop(int(raw_index) - 1)
+            if save_config(config):
+                input(f"✅ 已删除 {safe_display(removed['name'])}，按回车键继续...")
+            else:
+                config["last_name_rules"].insert(int(raw_index) - 1, removed)
+                input("按回车键继续...")
+            continue
+
+        if choice == "5":
+            if input("输入 DELETE 确认清空全部 Last Name 规则: ").strip() == "DELETE":
+                old_rules = config["last_name_rules"]
+                config["last_name_rules"] = []
+                if save_config(config):
+                    input("✅ Last Name 规则已清空，按回车键继续...")
+                else:
+                    config["last_name_rules"] = old_rules
+                    input("按回车键继续...")
+            continue
+
+        if choice == "6":
+            configure_emoji_schedules(config)
+            config = load_config()
+            continue
+
+        input("❌ 选项无效，按回车键继续...")
 
 def print_emoji_schedules(schedules):
     if not schedules:
@@ -1130,7 +1394,7 @@ def main_menu():
             configure_update_interval(config)
 
         elif choice == '14':
-            configure_emoji_schedules(config)
+            configure_last_name_rules(config)
 
         elif choice == '15':
             print("\n正在强制重启后台服务...")
@@ -1161,30 +1425,33 @@ def main_menu():
                 print(">> 无法获取远程版本号，仍尝试拉取最新代码...")
             daemon_target = "/opt/tg_updater/tg_daemon.py"
             panel_target = "/opt/tg_updater/tg_panel.py"
+            bio_templates_target = "/opt/tg_updater/bio_templates.py"
             requirements_target = "/opt/tg_updater/requirements.txt"
             res1, daemon_tmp = download_remote_file("tg_daemon.py", daemon_target)
             res2, panel_tmp = download_remote_file("tg_panel.py", panel_target)
-            res3, requirements_tmp = download_remote_file("requirements.txt", requirements_target)
+            res3, bio_templates_tmp = download_remote_file("bio_templates.py", bio_templates_target)
+            res4, requirements_tmp = download_remote_file("requirements.txt", requirements_target)
             
-            if res1 == 0 and res2 == 0 and res3 == 0:
+            if res1 == 0 and res2 == 0 and res3 == 0 and res4 == 0:
                 daemon_valid = validate_python_file(daemon_tmp, ("main", "change_name_auto"))
                 panel_valid = validate_python_file(panel_tmp, ("CURRENT_VERSION", "main_menu"))
+                bio_templates_valid = validate_python_file(bio_templates_tmp, ("BIO_TEMPLATES", "render_bio"))
                 requirements_valid = validate_requirements_file(requirements_tmp)
-                if not daemon_valid or not panel_valid or not requirements_valid:
-                    cleanup_temp_files(daemon_tmp, panel_tmp, requirements_tmp)
+                if not daemon_valid or not panel_valid or not bio_templates_valid or not requirements_valid:
+                    cleanup_temp_files(daemon_tmp, panel_tmp, bio_templates_tmp, requirements_tmp)
                     print("\n❌ 更新失败！下载文件未通过语法或依赖格式校验，已取消覆盖。")
                     input("按回车键返回主菜单...")
                     continue
 
                 downloaded_version = extract_version_from_file(panel_tmp)
                 if downloaded_version is None or parse_version(downloaded_version) is None:
-                    cleanup_temp_files(daemon_tmp, panel_tmp, requirements_tmp)
+                    cleanup_temp_files(daemon_tmp, panel_tmp, bio_templates_tmp, requirements_tmp)
                     print("\n❌ 更新失败！下载到的面板脚本版本号缺失或格式无效，已取消覆盖。")
                     input("按回车键返回主菜单...")
                     continue
                 downloaded_compare = compare_versions(downloaded_version, CURRENT_VERSION)
                 if downloaded_compare is not None and downloaded_compare < 0:
-                    cleanup_temp_files(daemon_tmp, panel_tmp, requirements_tmp)
+                    cleanup_temp_files(daemon_tmp, panel_tmp, bio_templates_tmp, requirements_tmp)
                     print(f"\n❌ 已取消更新：下载到的版本是 {downloaded_version}，低于当前版本 {CURRENT_VERSION}。")
                     print("请确认 GitHub main 分支已经推送最新代码，或等待 raw.githubusercontent.com 缓存刷新。")
                     input("按回车键返回主菜单...")
@@ -1203,10 +1470,14 @@ def main_menu():
                 backups = replace_remote_files((
                     (daemon_tmp, daemon_target),
                     (panel_tmp, panel_target),
+                    (bio_templates_tmp, bio_templates_target),
                     (requirements_tmp, requirements_target),
                 ))
                 if backups is not None:
                     update_ok = harden_code_files()
+                    if update_ok and requirements_changed:
+                        print(">> 依赖文件发生变化，正在同步 Python 虚拟环境...")
+                        update_ok = install_requirements_file(requirements_target)
                     if update_ok and service_was_active:
                         print(">> 正在重启后台服务并检查运行状态...")
                         update_ok = run_command(["sudo", "systemctl", "restart", "tg_name.service"]) == 0
@@ -1234,13 +1505,11 @@ def main_menu():
                         else:
                             print("❌ 更新和自动恢复均失败，备份文件已保留在 /opt/tg_updater，请勿继续更新并检查磁盘与权限。")
                     print("⚠️ 提示：当前面板仍是内存中的旧界面，请输入 [0] 退出后重新运行 'tg'。")
-                    if update_ok and requirements_changed:
-                        print("⚠️ 依赖文件已变化，请重新执行 README 中的安装命令以同步虚拟环境。")
                 else:
-                    cleanup_temp_files(daemon_tmp, panel_tmp, requirements_tmp)
+                    cleanup_temp_files(daemon_tmp, panel_tmp, bio_templates_tmp, requirements_tmp)
                     print("\n❌ 更新失败！文件替换失败，已尝试恢复旧版本，请检查 /opt/tg_updater 权限。")
             else:
-                cleanup_temp_files(daemon_tmp, panel_tmp, requirements_tmp)
+                cleanup_temp_files(daemon_tmp, panel_tmp, bio_templates_tmp, requirements_tmp)
                 print("\n❌ 更新失败！请检查 VPS 网络连接或 GitHub 仓库地址是否正确。")
             input("按回车键返回主菜单...")
             

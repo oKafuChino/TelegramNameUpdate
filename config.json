@@ -6,9 +6,32 @@
   "show_weather": true,
   "location": "Los Angeles",
   "digit_style": "sans_bold",
+  "last_name_mode": "classic",
+  "last_name_rules": [],
+  "last_name_default_items": [
+    {
+      "type": "time"
+    },
+    {
+      "type": "timezone"
+    },
+    {
+      "type": "date"
+    },
+    {
+      "type": "temp"
+    },
+    {
+      "type": "weather"
+    },
+    {
+      "type": "emoji"
+    }
+  ],
   "bio_enabled": false,
   "birth_date": "",
   "fixed_bio": "",
+  "bio_template": "elapsed_en",
   "update_interval": 1,
   "emoji_schedules": [],
   "name_order": [

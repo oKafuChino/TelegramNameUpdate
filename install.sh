@@ -94,10 +94,11 @@ download_file() {
 
 download_file "$REPO_URL/tg_daemon.py" "$TMP_DIR/tg_daemon.py"
 download_file "$REPO_URL/tg_panel.py" "$TMP_DIR/tg_panel.py"
+download_file "$REPO_URL/bio_templates.py" "$TMP_DIR/bio_templates.py"
 download_file "$REPO_URL/requirements.txt" "$TMP_DIR/requirements.txt"
 
 python3 -c 'import ast, pathlib, sys
-required = {"tg_daemon.py": {"main", "change_name_auto"}, "tg_panel.py": {"CURRENT_VERSION", "main_menu"}}
+required = {"tg_daemon.py": {"main", "change_name_auto"}, "tg_panel.py": {"CURRENT_VERSION", "main_menu"}, "bio_templates.py": {"BIO_TEMPLATES", "render_bio"}}
 for path in sys.argv[1:]:
     tree = ast.parse(pathlib.Path(path).read_text(encoding="utf-8"), filename=path)
     symbols = {node.name for node in tree.body if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))}
@@ -107,10 +108,11 @@ for path in sys.argv[1:]:
     missing = required[pathlib.Path(path).name] - symbols
     if missing:
         raise SystemExit(f"missing required symbols in {path}: {sorted(missing)}")' \
-    "$TMP_DIR/tg_daemon.py" "$TMP_DIR/tg_panel.py"
+    "$TMP_DIR/tg_daemon.py" "$TMP_DIR/tg_panel.py" "$TMP_DIR/bio_templates.py"
 
 DAEMON_EXISTED=false
 PANEL_EXISTED=false
+BIO_TEMPLATES_EXISTED=false
 REQUIREMENTS_EXISTED=false
 UNIT_EXISTED=false
 if $SUDO test -f "$PROJECT_DIR/tg_daemon.py"; then
@@ -120,6 +122,10 @@ fi
 if $SUDO test -f "$PROJECT_DIR/tg_panel.py"; then
     $SUDO cp -p "$PROJECT_DIR/tg_panel.py" "$TMP_DIR/tg_panel.py.backup"
     PANEL_EXISTED=true
+fi
+if $SUDO test -f "$PROJECT_DIR/bio_templates.py"; then
+    $SUDO cp -p "$PROJECT_DIR/bio_templates.py" "$TMP_DIR/bio_templates.py.backup"
+    BIO_TEMPLATES_EXISTED=true
 fi
 if $SUDO test -f "$PROJECT_DIR/requirements.txt"; then
     $SUDO cp -p "$PROJECT_DIR/requirements.txt" "$TMP_DIR/requirements.txt.backup"
@@ -136,6 +142,7 @@ restore_previous_install() {
     $SUDO systemctl stop tg_name.service
     if $DAEMON_EXISTED; then $SUDO install -m 755 "$TMP_DIR/tg_daemon.py.backup" "$PROJECT_DIR/tg_daemon.py"; else $SUDO rm -f "$PROJECT_DIR/tg_daemon.py"; fi
     if $PANEL_EXISTED; then $SUDO install -m 755 "$TMP_DIR/tg_panel.py.backup" "$PROJECT_DIR/tg_panel.py"; else $SUDO rm -f "$PROJECT_DIR/tg_panel.py"; fi
+    if $BIO_TEMPLATES_EXISTED; then $SUDO install -m 644 "$TMP_DIR/bio_templates.py.backup" "$PROJECT_DIR/bio_templates.py"; else $SUDO rm -f "$PROJECT_DIR/bio_templates.py"; fi
     if $REQUIREMENTS_EXISTED; then
         $SUDO install -m 644 "$TMP_DIR/requirements.txt.backup" "$PROJECT_DIR/requirements.txt"
         $SUDO "$PROJECT_DIR/venv/bin/pip" install --no-cache-dir --no-compile -r "$PROJECT_DIR/requirements.txt"
@@ -174,6 +181,7 @@ $SUDO "$PROJECT_DIR/venv/bin/pip" install --no-cache-dir --no-compile -r "$TMP_D
 
 if ! $SUDO install -m 755 "$TMP_DIR/tg_daemon.py" "$PROJECT_DIR/tg_daemon.py" || \
    ! $SUDO install -m 755 "$TMP_DIR/tg_panel.py" "$PROJECT_DIR/tg_panel.py" || \
+   ! $SUDO install -m 644 "$TMP_DIR/bio_templates.py" "$PROJECT_DIR/bio_templates.py" || \
    ! $SUDO install -m 644 "$TMP_DIR/requirements.txt" "$PROJECT_DIR/requirements.txt"; then
     echo ">> 核心文件安装失败，正在恢复旧版本..."
     restore_previous_install
@@ -189,6 +197,9 @@ if $SUDO test -f "$PROJECT_DIR/api_auth.session" && ! $SUDO test -e "$DATA_DIR/a
 fi
 if $SUDO test -f "$PROJECT_DIR/api_auth.session-journal" && ! $SUDO test -e "$DATA_DIR/api_auth.session-journal"; then
     $SUDO mv "$PROJECT_DIR/api_auth.session-journal" "$DATA_DIR/api_auth.session-journal"
+fi
+if $SUDO test -f "$PROJECT_DIR/config.json" && ! $SUDO test -e "$DATA_DIR/config.json"; then
+    $SUDO mv "$PROJECT_DIR/config.json" "$DATA_DIR/config.json"
 fi
 if ! $SUDO test -f "$DATA_DIR/config.json"; then
     download_file "$REPO_URL/config.json" "$TMP_DIR/config.json"

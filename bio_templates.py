@@ -6,11 +6,12 @@ Fork users can still add templates here, but installed users should prefer
 
 
 def elapsed_en(ctx):
-    return (
+    generated = (
         f"It lasted {ctx['years']} years "
-        f"{ctx['months']} months and {ctx['days']} days | "
-        f"{ctx['fixed_bio']}"
+        f"{ctx['months']} months and {ctx['days']} days"
     )
+    format_letters = ctx.get("letters", str)
+    return f"{format_letters(generated)} | {ctx['fixed_bio']}"
 
 
 BIO_TEMPLATES = {

@@ -287,6 +287,8 @@ def build_bio_context(birth_date, fixed_bio, today=None, config=None, local_time
         "max_length": MAX_BIO_LENGTH,
     }
     ctx["join"] = join_non_empty
+    letter_map = LETTER_STYLE_MAPS.get(ctx["letter_style"], LETTER_STYLE_MAPS["normal"])
+    ctx["letters"] = lambda value: str(value).translate(letter_map)
     ctx["elapsed_en"] = lambda: bio_templates.elapsed_en(ctx)
     return ctx
 

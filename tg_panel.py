@@ -71,6 +71,15 @@ LETTER_STYLES = {
     "monospace": "𝙰𝚊",
     "double_struck": "𝔸𝕒",
 }
+LETTER_SOURCE = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
+LETTER_STYLE_MAPS = {
+    "normal": str.maketrans("", ""),
+    "sans_bold": str.maketrans(LETTER_SOURCE, "𝗔𝗕𝗖𝗗𝗘𝗙𝗚𝗛𝗜𝗝𝗞𝗟𝗠𝗡𝗢𝗣𝗤𝗥𝗦𝗧𝗨𝗩𝗪𝗫𝗬𝗭𝗮𝗯𝗰𝗱𝗲𝗳𝗴𝗵𝗶𝗷𝗸𝗹𝗺𝗻𝗼𝗽𝗾𝗿𝘀𝘁𝘂𝘃𝘄𝘅𝘆𝘇"),
+    "script": str.maketrans(LETTER_SOURCE, "𝒜ℬ𝒞𝒟ℰℱ𝒢ℋℐ𝒥𝒦ℒℳ𝒩𝒪𝒫𝒬ℛ𝒮𝒯𝒰𝒱𝒲𝒳𝒴𝒵𝒶𝒷𝒸𝒹ℯ𝒻ℊ𝒽𝒾𝒿𝓀𝓁𝓂𝓃ℴ𝓅𝓆𝓇𝓈𝓉𝓊𝓋𝓌𝓍𝓎𝓏"),
+    "bold_script": str.maketrans(LETTER_SOURCE, "𝓐𝓑𝓒𝓓𝓔𝓕𝓖𝓗𝓘𝓙𝓚𝓛𝓜𝓝𝓞𝓟𝓠𝓡𝓢𝓣𝓤𝓥𝓦𝓧𝓨𝓩𝓪𝓫𝓬𝓭𝓮𝓯𝓰𝓱𝓲𝓳𝓴𝓵𝓶𝓷𝓸𝓹𝓺𝓻𝓼𝓽𝓾𝓿𝔀𝔁𝔂𝔃"),
+    "monospace": str.maketrans(LETTER_SOURCE, "𝙰𝙱𝙲𝙳𝙴𝙵𝙶𝙷𝙸𝙹𝙺𝙻𝙼𝙽𝙾𝙿𝚀𝚁𝚂𝚃𝚄𝚅𝚆𝚇𝚈𝚉𝚊𝚋𝚌𝚍𝚎𝚏𝚐𝚑𝚒𝚓𝚔𝚕𝚖𝚗𝚘𝚙𝚚𝚛𝚜𝚝𝚞𝚟𝚠𝚡𝚢𝚣"),
+    "double_struck": str.maketrans(LETTER_SOURCE, "𝔸𝔹ℂ𝔻𝔼𝔽𝔾ℍ𝕀𝕁𝕂𝕃𝕄ℕ𝕆ℙℚℝ𝕊𝕋𝕌𝕍𝕎𝕏𝕐ℤ𝕒𝕓𝕔𝕕𝕖𝕗𝕘𝕙𝕚𝕛𝕜𝕝𝕞𝕟𝕠𝕡𝕢𝕣𝕤𝕥𝕦𝕧𝕨𝕩𝕪𝕫"),
+}
 UPDATE_INTERVALS = (1, 5, 15, 30, 60)
 MAX_LOCATION_LENGTH = 80
 MAX_BIO_LENGTH = 70
@@ -343,6 +352,8 @@ def build_bio_context(birth_date, fixed_bio, today=None, config=None, local_time
         "max_length": MAX_BIO_LENGTH,
     }
     ctx["join"] = join_non_empty
+    letter_map = LETTER_STYLE_MAPS.get(ctx["letter_style"], LETTER_STYLE_MAPS["normal"])
+    ctx["letters"] = lambda value: str(value).translate(letter_map)
     ctx["elapsed_en"] = lambda: bio_templates.elapsed_en(ctx)
     return ctx
 

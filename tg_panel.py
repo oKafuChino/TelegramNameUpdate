@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env python3
+#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
 import os
@@ -661,7 +661,7 @@ def compare_versions(left, right):
 
 def extract_version_from_file(path):
     try:
-        with open(path, 'r', encoding='utf-8') as f:
+        with open(path, 'r', encoding='utf-8-sig') as f:
             content = f.read()
     except (OSError, UnicodeDecodeError):
         return None
@@ -786,7 +786,7 @@ def validate_python_file(path, required_symbols=()):
     try:
         if os.path.getsize(path) > MAX_REMOTE_FILE_SIZE:
             return False
-        with open(path, 'r', encoding='utf-8') as f:
+        with open(path, 'r', encoding='utf-8-sig') as f:
             tree = ast.parse(f.read(), filename=path)
     except (OSError, UnicodeDecodeError, SyntaxError):
         return False

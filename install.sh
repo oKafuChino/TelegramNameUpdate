@@ -101,7 +101,7 @@ download_file "$REPO_URL/requirements.txt" "$TMP_DIR/requirements.txt"
 python3 -c 'import ast, pathlib, sys
 required = {"tg_daemon.py": {"main", "change_name_auto"}, "tg_panel.py": {"CURRENT_VERSION", "main_menu"}, "bio_templates.py": {"BIO_TEMPLATES", "render_bio"}, "bio_template_loader.py": {"load_templates", "render_bio"}}
 for path in sys.argv[1:]:
-    tree = ast.parse(pathlib.Path(path).read_text(encoding="utf-8"), filename=path)
+    tree = ast.parse(pathlib.Path(path).read_text(encoding="utf-8-sig"), filename=path)
     symbols = {node.name for node in tree.body if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))}
     for node in tree.body:
         if isinstance(node, ast.Assign):

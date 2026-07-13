@@ -25,7 +25,7 @@ from bio_template_loader import DIGIT_STYLES, LETTER_STYLES, LETTER_STYLE_MAPS
 # 【版本定义】
 # 每次修改代码推送到 GitHub 前，请手动提升此版本号
 # ==========================================
-CURRENT_VERSION = "v1.11.1"
+CURRENT_VERSION = "v1.11.2"
 AUTHOR = "oKafuChino"
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))

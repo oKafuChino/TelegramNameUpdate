@@ -770,6 +770,14 @@ async def wait_for_next_bio_check(force_event):
     except asyncio.TimeoutError:
         return False
 
+def create_telegram_client(api_id, api_hash):
+    return TelegramClient(
+        api_auth_file,
+        api_id,
+        api_hash,
+        receive_updates=False,
+    )
+
 async def update_bio_auto(client, update_lock, force_event=None, skip_once_event=None):
     force_event = force_event or asyncio.Event()
     last_updated_date = load_bio_update_date()
@@ -823,7 +831,7 @@ async def main():
         raise RuntimeError("缺少 Telegram 登录 Session，请先运行 `tg` 并使用选项 [1] 初始化账号。")
 
     api_id, api_hash = load_api_credentials(allow_prompt=sys.stdin.isatty())
-    client = TelegramClient(api_auth_file, api_id, api_hash)
+    client = create_telegram_client(api_id, api_hash)
     await client.start()
     harden_runtime_files()
     
